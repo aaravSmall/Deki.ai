@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Overlay</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="overlay">
+    <header class="drag-bar">
+      <span class="dot" id="status-dot"></span>
+      <span class="title">local ai overlay</span>
+      <span class="hint">Ctrl+Shift+Space hide · Ctrl+Shift+R refresh</span>
+      <button id="close-btn" class="close-btn" title="Quit">&times;</button>
+    </header>
+
+    <main class="response-card">
+      <div id="response-text" class="response-text">Waiting for first capture…</div>
+    </main>
+
+    <form id="ask-form" class="ask-row">
+      <input
+        id="ask-input"
+        type="text"
+        placeholder="Ask a question…"
+        autocomplete="off"
+      />
+      <button type="submit">Ask</button>
+    </form>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
