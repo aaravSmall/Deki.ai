@@ -10,8 +10,16 @@ app.use(express.json({ limit: '15mb' })); // screenshots are base64 PNGs, can be
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3232;
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const DEFAULT_MODEL = process.env.OLLAMA_MODEL || 'llama3';
-const FALLBACK_MODEL = process.env.OLLAMA_FALLBACK_MODEL || 'mistral';
+
+// Two-stage pipeline: a small vision model captions the screenshot in plain
+// text, then a text-only instruct model reasons over that caption + the
+// transcript + question. Small vision models like moondream are tuned for
+// short direct captioning prompts and produce empty/garbled output when
+// given the verbose instructional prompt a "helpful assistant" response
+// needs - so that reasoning is left entirely to the text model instead.
+const VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'moondream';
+const TEXT_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const TEXT_FALLBACK_MODEL = process.env.OLLAMA_FALLBACK_MODEL || 'mistral';
 
 interface AnalyzeRequestBody {
   screenshot?: string;
@@ -25,9 +33,42 @@ interface OllamaGenerateChunk {
   done?: boolean;
 }
 
-function buildPrompt(transcript: string, question?: string): string {
+async function callOllama(model: string, prompt: string, images: string[] | undefined, stream: boolean) {
+  return fetch(`${OLLAMA_URL}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, prompt, images, stream }),
+  });
+}
+
+// Captions the screenshot with a short, direct prompt (best-effort). Returns
+// null on any failure - the caller falls back to reasoning without screen
+// context rather than failing the whole request.
+async function captionScreenshot(screenshot: string): Promise<string | null> {
+  try {
+    const response = await callOllama(
+      VISION_MODEL,
+      'Describe what is currently shown on the screen in detail.',
+      [screenshot],
+      false
+    );
+    if (!response.ok) {
+      console.warn(`[server] vision model "${VISION_MODEL}" failed to caption screenshot: status ${response.status}`);
+      return null;
+    }
+    const data = (await response.json()) as OllamaGenerateChunk;
+    return data.response?.trim() || null;
+  } catch (err) {
+    console.warn(`[server] vision model "${VISION_MODEL}" unreachable:`, (err as Error).message);
+    return null;
+  }
+}
+
+function buildPrompt(transcript: string, question: string | undefined, screenDescription: string | null): string {
   const parts = [
-    'You are a real-time assistant. Based on this screen context and conversation transcript, provide a concise, helpful response.',
+    'You are a real-time assistant. Based on the screen content, conversation transcript, and question below, provide a concise, helpful response.',
+    '',
+    `Screen content: ${screenDescription || '(no screen context available)'}`,
     '',
     `Conversation transcript (most recent ~500 words):\n${transcript || '(no transcript yet)'}`,
   ];
@@ -39,29 +80,28 @@ function buildPrompt(transcript: string, question?: string): string {
   return parts.join('\n');
 }
 
-async function callOllama(model: string, prompt: string, images: string[] | undefined, stream: boolean) {
-  return fetch(`${OLLAMA_URL}/api/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt, images, stream }),
-  });
+async function tryTextModel(model: string, prompt: string, stream: boolean) {
+  const response = await callOllama(model, prompt, undefined, stream);
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`status ${response.status}: ${errBody}`);
+  }
+  return response;
 }
 
-async function callOllamaWithFallback(prompt: string, images: string[] | undefined, stream: boolean) {
+async function callTextModelWithFallback(prompt: string, stream: boolean) {
   try {
-    const response = await callOllama(DEFAULT_MODEL, prompt, images, stream);
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    return { response, modelUsed: DEFAULT_MODEL };
+    const response = await tryTextModel(TEXT_MODEL, prompt, stream);
+    return { response, modelUsed: TEXT_MODEL };
   } catch (err) {
     console.warn(
-      `[server] primary model "${DEFAULT_MODEL}" failed (${(err as Error).message}), falling back to "${FALLBACK_MODEL}"`
+      `[server] primary model "${TEXT_MODEL}" failed (${(err as Error).message}), falling back to "${TEXT_FALLBACK_MODEL}"`
     );
     try {
-      const response = await callOllama(FALLBACK_MODEL, prompt, images, stream);
-      if (!response.ok) throw new Error(`status ${response.status}`);
-      return { response, modelUsed: FALLBACK_MODEL };
+      const response = await tryTextModel(TEXT_FALLBACK_MODEL, prompt, stream);
+      return { response, modelUsed: TEXT_FALLBACK_MODEL };
     } catch (fallbackErr) {
-      console.error(`[server] fallback model "${FALLBACK_MODEL}" also failed:`, (fallbackErr as Error).message);
+      console.error(`[server] fallback model "${TEXT_FALLBACK_MODEL}" also failed:`, (fallbackErr as Error).message);
       return null;
     }
   }
@@ -71,15 +111,10 @@ app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>,
   const { screenshot, transcript = '', question, stream } = req.body;
   const useStreaming = stream !== false;
 
-  const prompt = buildPrompt(transcript, question);
+  const screenDescription = screenshot ? await captionScreenshot(screenshot) : null;
+  const prompt = buildPrompt(transcript, question, screenDescription);
 
-  // `images` only has an effect with a vision-capable Ollama model (e.g.
-  // llava, llama3.2-vision). Plain llama3/mistral are text-only and will
-  // silently ignore this field - see README for notes on swapping in a
-  // vision model if screen content itself needs to be "seen".
-  const images = screenshot ? [screenshot] : undefined;
-
-  const result = await callOllamaWithFallback(prompt, images, useStreaming);
+  const result = await callTextModelWithFallback(prompt, useStreaming);
 
   if (!result) {
     res.status(502).json({ error: 'Ollama unreachable on both primary and fallback models' });
@@ -131,5 +166,7 @@ app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>,
 
 app.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT}`);
-  console.log(`[server] forwarding to Ollama at ${OLLAMA_URL} (model=${DEFAULT_MODEL}, fallback=${FALLBACK_MODEL})`);
+  console.log(
+    `[server] forwarding to Ollama at ${OLLAMA_URL} (vision=${VISION_MODEL}, text=${TEXT_MODEL}, fallback=${TEXT_FALLBACK_MODEL})`
+  );
 });

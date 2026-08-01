@@ -1,6 +1,7 @@
-// Renderer: mic capture (getUserMedia + MediaRecorder), streamed AI response
-// rendering, and the manual question input. Talks to the main process only
-// through the narrow `window.overlayAPI` bridge exposed by preload.js.
+// Renderer: system audio capture (getUserMedia + MediaRecorder), streamed AI
+// response rendering, and the manual question input. Talks to the main
+// process only through the narrow `window.overlayAPI` bridge exposed by
+// preload.js.
 
 const statusDot = document.getElementById('status-dot');
 const responseText = document.getElementById('response-text');
@@ -12,7 +13,8 @@ closeBtn.addEventListener('click', () => {
   window.overlayAPI.quitApp();
 });
 
-const MIC_SEGMENT_MS = 5000;
+const AUDIO_SEGMENT_MS = 5000;
+const BLACKHOLE_LABEL_MATCH = /blackhole/i;
 
 let currentResponseBuffer = '';
 
@@ -56,20 +58,58 @@ askForm.addEventListener('submit', async (event) => {
   await window.overlayAPI.askQuestion(question);
 });
 
-// --- continuous mic capture in ~5s self-contained segments ---
+// --- continuous system audio capture in ~5s self-contained segments ---
 //
-// Each segment is a fresh MediaRecorder start/stop cycle so every blob is an
-// independently-decodable webm file (a single recorder with `timeslice` only
-// puts container headers in the first chunk, which breaks ffmpeg on later
-// chunks). The small stop/restart gap is an acceptable tradeoff for a demo.
+// Captures from a BlackHole virtual audio device (not the microphone) so the
+// transcript reflects what's actually playing on the laptop - a call, a
+// video, etc. - rather than whatever the mic happens to pick up. Requires
+// BlackHole to be installed and set as (or part of) the system output device;
+// see README for the one-time setup. Each segment is a fresh MediaRecorder
+// start/stop cycle so every blob is an independently-decodable webm file (a
+// single recorder with `timeslice` only puts container headers in the first
+// chunk, which breaks ffmpeg on later chunks). The small stop/restart gap is
+// an acceptable tradeoff for a demo.
 
-let micStream = null;
+let audioStream = null;
 
-async function startMicCaptureLoop() {
+async function findBlackHoleDeviceId() {
+  let devices = await navigator.mediaDevices.enumerateDevices();
+  let match = devices.find((d) => d.kind === 'audioinput' && BLACKHOLE_LABEL_MATCH.test(d.label));
+
+  if (!match) {
+    // Device labels are blank until permission has been granted at least
+    // once; open the default input briefly just to unlock labels, then
+    // re-enumerate and look for BlackHole specifically.
+    try {
+      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      tempStream.getTracks().forEach((track) => track.stop());
+      devices = await navigator.mediaDevices.enumerateDevices();
+      match = devices.find((d) => d.kind === 'audioinput' && BLACKHOLE_LABEL_MATCH.test(d.label));
+    } catch (err) {
+      console.error('[overlay] could not enumerate audio input devices:', err);
+    }
+  }
+
+  return match ? match.deviceId : null;
+}
+
+async function startAudioCaptureLoop() {
+  const blackHoleId = await findBlackHoleDeviceId();
+
+  if (!blackHoleId) {
+    console.warn(
+      '[overlay] BlackHole input device not found - system audio capture disabled. ' +
+        'See README for one-time setup (brew install blackhole-2ch + Audio MIDI Setup).'
+    );
+    return;
+  }
+
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: { exact: blackHoleId } },
+    });
   } catch (err) {
-    console.error('[overlay] microphone access failed:', err);
+    console.error('[overlay] failed to open BlackHole input:', err);
     return;
   }
 
@@ -77,10 +117,10 @@ async function startMicCaptureLoop() {
 }
 
 function recordSegment() {
-  if (!micStream) return;
+  if (!audioStream) return;
 
   const chunks = [];
-  const recorder = new MediaRecorder(micStream, { mimeType: 'audio/webm' });
+  const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
 
   recorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) chunks.push(event.data);
@@ -98,7 +138,7 @@ function recordSegment() {
   recorder.start();
   setTimeout(() => {
     if (recorder.state !== 'inactive') recorder.stop();
-  }, MIC_SEGMENT_MS);
+  }, AUDIO_SEGMENT_MS);
 }
 
-startMicCaptureLoop();
+startAudioCaptureLoop();

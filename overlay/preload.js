@@ -6,7 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('overlayAPI', {
   // Renderer -> main
-  sendAudioChunk: (arrayBuffer) => ipcRenderer.send('mic:audio-chunk', arrayBuffer),
+  sendAudioChunk: (arrayBuffer) => ipcRenderer.send('audio:chunk', arrayBuffer),
   askQuestion: (question) => ipcRenderer.invoke('manual:ask', question),
   quitApp: () => ipcRenderer.send('app:quit'),
 

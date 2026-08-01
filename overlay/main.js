@@ -195,9 +195,10 @@ function registerShortcuts() {
   if (!forceOk) console.warn('[overlay] Failed to register force-capture shortcut (Ctrl/Cmd+Shift+R)');
 }
 
-// --- mic audio -> local whisper.cpp transcription ---
+// --- system audio -> local whisper.cpp transcription ---
 //
-// Renderer records mic audio with MediaRecorder (webm/opus) and ships each
+// Renderer records system audio (via a BlackHole virtual input device, not
+// the microphone - see README) with MediaRecorder (webm/opus) and ships each
 // ~5s chunk over IPC as an ArrayBuffer. We convert it to 16kHz mono WAV with
 // ffmpeg (required on PATH - see README) and hand it to nodejs-whisper, which
 // shells out to a locally-built whisper.cpp binary. Nothing here calls out
@@ -253,7 +254,7 @@ async function transcribeAudioChunk(arrayBuffer) {
   }
 }
 
-ipcMain.on('mic:audio-chunk', (_event, arrayBuffer) => {
+ipcMain.on('audio:chunk', (_event, arrayBuffer) => {
   transcribeAudioChunk(arrayBuffer);
 });
 

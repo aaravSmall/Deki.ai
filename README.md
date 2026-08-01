@@ -1,8 +1,9 @@
 # Deki.ai — local AI overlay (portfolio demo)
 
-An always-on-top Electron overlay that captures your screen and mic, transcribes
-speech locally with whisper.cpp, and streams a response from a local Ollama
-model. Everything runs on your machine — no cloud APIs, no API keys.
+An always-on-top Electron overlay that captures your screen and system audio,
+transcribes speech locally with whisper.cpp, and streams a response from a
+local Ollama vision model. Everything runs on your machine — no cloud APIs,
+no API keys.
 
 This is a portfolio/learning project demonstrating screen capture, overlay
 windows, local LLM inference, and local speech-to-text. It is **not** built
@@ -13,22 +14,48 @@ viewing a shared screen sees it too.
 ## Prerequisites
 
 1. **Node.js 18+** (`node --version`)
-2. **A C/C++ compiler toolchain**, needed to build `whisper.cpp` locally via `nodejs-whisper`:
-   - macOS: Xcode Command Line Tools — `xcode-select --install`
-   - Linux: `sudo apt install build-essential`
-   - Windows: MSYS2 or MinGW-w64 (make sure `make`/`mingw32-make` is on PATH)
+2. **A C/C++ compiler toolchain + CMake**, needed to build `whisper.cpp` locally via `nodejs-whisper`:
+   - macOS: Xcode Command Line Tools (`xcode-select --install`) + `brew install cmake`
+   - Linux: `sudo apt install build-essential cmake`
+   - Windows: MSYS2 or MinGW-w64 (make sure `make`/`mingw32-make` is on PATH) + CMake
 3. **ffmpeg on your PATH** — `nodejs-whisper` shells out to the `ffmpeg` CLI to
-   convert recorded mic audio to 16kHz mono WAV before transcription:
+   convert recorded audio to 16kHz mono WAV before transcription:
    - macOS: `brew install ffmpeg`
    - Linux: `sudo apt install ffmpeg`
    - Windows: install from https://ffmpeg.org/download.html and add to PATH
-4. **Ollama**, running locally as the inference engine:
+4. **Ollama**, running locally as the inference engine, with two models
+   pulled - one for captioning the screenshot, one for reasoning over that
+   caption + the transcript (see "1. Backend" below for why it's split this
+   way):
    ```bash
    ollama serve
-   ollama pull llama3
-   # optional fallback model used if llama3 is unavailable:
+   ollama pull moondream   # small, fast vision model - captions the screen
+   ollama pull llama3      # text-only instruct model - does the reasoning
+   # optional extra fallback for the reasoning stage if llama3 fails:
    ollama pull mistral
    ```
+5. **BlackHole (macOS only)** — a virtual audio driver, so the overlay
+   transcribes what's actually playing on your laptop (a call, a video, etc.)
+   instead of whatever your microphone happens to pick up. This is a system
+   audio driver install, not just an npm package, and needs a one-time manual
+   step:
+   ```bash
+   brew install blackhole-2ch
+   # then reboot - the installer requires it to take effect
+   ```
+   After rebooting, open **Audio MIDI Setup** (Spotlight search for it):
+   1. Click the **+** button in the bottom-left → **Create Multi-Output Device**
+   2. Check both your normal output (e.g. "MacBook Pro Speakers") **and**
+      "BlackHole 2ch"
+   3. Set this new Multi-Output Device as your system output (System Settings
+      → Sound → Output), so you still hear audio while it's also captured
+   4. Leave it set this way while using the overlay — the app looks for an
+      audio input device labeled "BlackHole" automatically
+
+   On Linux/Windows, system audio loopback capture isn't wired up in this
+   project yet; you'd need an equivalent virtual audio device (e.g. a
+   PulseAudio/PipeWire monitor source on Linux, or a virtual cable on
+   Windows) and to adjust `overlay/src/renderer.js`'s device matching.
 
 ## 1. Backend
 
@@ -39,20 +66,25 @@ npm run dev
 ```
 
 Starts an Express + TypeScript server on `http://localhost:3232` (override with
-`PORT`). It exposes `POST /api/cluely/analyze`, builds a prompt from the
-screenshot + rolling transcript + optional typed question, and forwards it to
-Ollama's `/api/generate` at `http://localhost:11434` (override with
-`OLLAMA_URL`). Model defaults to `llama3` (`OLLAMA_MODEL`), falling back to
-`mistral` (`OLLAMA_FALLBACK_MODEL`) if the primary model call fails. Responses
-stream back chunk-by-chunk; set `"stream": false` in the request body for a
-single non-streaming JSON response instead.
+`PORT`), forwarding to Ollama at `http://localhost:11434` (override with
+`OLLAMA_URL`) through a **two-stage pipeline**:
 
-> **Note on the screenshot:** the base64 screenshot is passed to Ollama via
-> the `images` field, which only does anything with a vision-capable model
-> (e.g. `llava`, `llama3.2-vision`). Plain `llama3`/`mistral` are text-only
-> and will silently ignore the image — the response will be grounded in the
-> transcript and typed question only, unless you swap in a vision model via
-> `OLLAMA_MODEL`.
+1. **Vision stage** — the screenshot is captioned in plain text by a small
+   vision model, `moondream` by default (`OLLAMA_VISION_MODEL`), using a
+   short, direct prompt. Small vision models like moondream are tuned for
+   this kind of simple captioning and produce empty/garbled output if given
+   a longer instructional prompt, so this stage is kept deliberately minimal.
+2. **Reasoning stage** — a text-only instruct model, `llama3` by default
+   (`OLLAMA_MODEL`, falling back to `mistral` / `OLLAMA_FALLBACK_MODEL` if it
+   fails), combines that screen caption with the rolling transcript and any
+   typed question into the actual response. Images are never sent to this
+   model, since plain instruct models like `llama3`/`mistral` reject
+   multimodal input outright (HTTP 400: "model does not support multimodal
+   requests") rather than ignoring it.
+
+`POST /api/cluely/analyze` accepts `{ screenshot?, transcript?, question?,
+stream? }`. Responses stream back chunk-by-chunk by default; set
+`"stream": false` for a single non-streaming JSON response instead.
 
 ## 2. Whisper model download (one-time)
 
@@ -79,9 +111,13 @@ npm start
 
 - **Ctrl/Cmd+Shift+Space** — show/hide the overlay
 - **Ctrl/Cmd+Shift+R** — force an immediate screenshot + analysis cycle
-- Otherwise it captures a screenshot every 3s, transcribes mic audio in ~5s
-  segments, and sends `{ screenshot, transcript, question? }` to the backend,
-  streaming the response into the overlay card as it arrives.
+- Otherwise it captures a screenshot every 3s, transcribes system audio (via
+  BlackHole - see prerequisite #5 above) in ~5s segments, and sends
+  `{ screenshot, transcript, question? }` to the backend, streaming the
+  response into the overlay card as it arrives.
+- If BlackHole isn't installed/configured, the overlay logs a warning to the
+  DevTools console and simply skips audio transcription — screenshot-based
+  analysis still works.
 
 Configure the backend URL and Whisper model via env vars if you change
 defaults:
