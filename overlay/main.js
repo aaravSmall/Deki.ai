@@ -14,7 +14,7 @@ const util = require('util');
 
 const execFileAsync = util.promisify(execFile);
 
-const BACKEND_URL = process.env.CLUELY_BACKEND_URL || 'http://localhost:3232';
+const BACKEND_URL = process.env.DEKI_BACKEND_URL || 'http://localhost:3232';
 // How long to wait after one cycle finishes before checking whether another is
 // needed. Cycles never overlap, so the real cadence is this plus however long
 // the two model calls take.
@@ -35,6 +35,10 @@ const MANUAL_ANSWER_HOLD_MS = 20000;
 const MAX_PENDING_TRANSCRIPTIONS = 3;
 const TRANSCRIPT_WORD_LIMIT = 500;
 const WHISPER_MODEL = process.env.WHISPER_MODEL_NAME || 'base.en';
+// English-only models (*.en) can't auto-detect language, so pin them to 'en';
+// multilingual models default to auto-detection. WHISPER_LANGUAGE overrides.
+const WHISPER_LANGUAGE =
+  process.env.WHISPER_LANGUAGE || (WHISPER_MODEL.endsWith('.en') ? 'en' : 'auto');
 
 let overlayWindow = null;
 let captureTimer = null;
@@ -188,7 +192,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
   overlayWindow.webContents.send('ai:chunk-start');
 
   try {
-    const response = await fetch(`${BACKEND_URL}/api/cluely/analyze`, {
+    const response = await fetch(`${BACKEND_URL}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -351,7 +355,7 @@ async function transcribeAudioChunk(arrayBuffer) {
       removeWavFileAfterTranscription: true,
       whisperOptions: {
         outputInText: true,
-        language: 'auto',
+        language: WHISPER_LANGUAGE,
       },
     });
 

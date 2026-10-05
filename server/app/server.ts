@@ -128,7 +128,7 @@ async function callTextModelWithFallback(prompt: string, stream: boolean, signal
   }
 }
 
-app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>, res: Response) => {
+app.post('/api/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>, res: Response) => {
   const { screenshot, transcript = '', question, stream } = req.body;
   const useStreaming = stream !== false;
 
