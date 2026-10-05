@@ -15,13 +15,34 @@ const util = require('util');
 const execFileAsync = util.promisify(execFile);
 
 const BACKEND_URL = process.env.CLUELY_BACKEND_URL || 'http://localhost:3232';
+// How long to wait after one cycle finishes before checking whether another is
+// needed. Cycles never overlap, so the real cadence is this plus however long
+// the two model calls take.
 const CAPTURE_INTERVAL_MS = 3000;
+// A screen counts as "changed" when the average per-channel difference of a
+// 32x18 fingerprint exceeds this (0-255 scale). Filters out cursor blinks and
+// clock ticks while still catching scrolling, new windows, slide changes.
+const SCREEN_CHANGE_THRESHOLD = 4;
+const FINGERPRINT_SIZE = { width: 32, height: 18 };
+// Screenshots are downscaled to this width before being sent; a full Retina
+// PNG is several MB and makes the vision model much slower for no benefit.
+const SCREENSHOT_MAX_WIDTH = 1280;
+// After answering a typed question, keep that answer on screen at least this
+// long before automatic cycles may replace it.
+const MANUAL_ANSWER_HOLD_MS = 20000;
+// If whisper falls behind real time, drop the oldest waiting segments beyond
+// this many so the transcript stays current instead of lagging further.
+const MAX_PENDING_TRANSCRIPTIONS = 3;
 const TRANSCRIPT_WORD_LIMIT = 500;
 const WHISPER_MODEL = process.env.WHISPER_MODEL_NAME || 'base.en';
 
 let overlayWindow = null;
 let captureTimer = null;
+let captureLoopRunning = false;
 let transcriptWords = [];
+let transcriptVersion = 0; // bumps whenever new words arrive
+let lastAnalyzed = { fingerprint: null, transcriptVersion: -1 };
+let holdAutoUntil = 0;
 
 // --- rolling transcript buffer (capped at last ~500 words) ---
 
@@ -33,6 +54,7 @@ function appendTranscript(text) {
   if (transcriptWords.length > TRANSCRIPT_WORD_LIMIT) {
     transcriptWords = transcriptWords.slice(transcriptWords.length - TRANSCRIPT_WORD_LIMIT);
   }
+  transcriptVersion++;
 }
 
 function getTranscriptText() {
@@ -83,19 +105,36 @@ function toggleOverlay() {
 
 // --- screenshot capture ---
 
-async function captureScreenshotBase64() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.size;
-
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width, height },
-  });
-
+async function capturePrimaryScreen(thumbnailSize) {
+  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
   const primarySource = sources[0];
   if (!primarySource || primarySource.thumbnail.isEmpty()) return null;
+  return primarySource.thumbnail;
+}
 
-  return primarySource.thumbnail.toPNG().toString('base64');
+async function captureScreenshotBase64() {
+  const { width, height } = screen.getPrimaryDisplay().size;
+  const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / width);
+  const image = await capturePrimaryScreen({
+    width: Math.round(width * scale),
+    height: Math.round(height * scale),
+  });
+  return image ? image.toPNG().toString('base64') : null;
+}
+
+// Tiny, cheap capture used only to decide whether the screen changed.
+async function captureFingerprint() {
+  const image = await capturePrimaryScreen(FINGERPRINT_SIZE);
+  if (!image) return null;
+  // desktopCapturer keeps aspect ratio, so normalize to an exact size.
+  return image.resize(FINGERPRINT_SIZE).toBitmap();
+}
+
+function screenChanged(a, b) {
+  if (!a || !b || a.length !== b.length) return true;
+  let total = 0;
+  for (let i = 0; i < a.length; i++) total += Math.abs(a[i] - b[i]);
+  return total / a.length > SCREEN_CHANGE_THRESHOLD;
 }
 
 // --- analysis cycle: screenshot + transcript -> backend -> stream to renderer ---
@@ -141,6 +180,10 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
   }
 
   const transcript = getTranscriptText();
+  lastAnalyzed = {
+    fingerprint: await captureFingerprint().catch(() => null),
+    transcriptVersion,
+  };
 
   overlayWindow.webContents.send('ai:chunk-start');
 
@@ -214,16 +257,37 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
   }
 }
 
+// Self-pacing loop: each tick waits for the previous cycle to finish, then
+// only runs a new analysis if the screen or transcript actually changed.
+async function autoTick() {
+  captureTimer = null;
+  if (!captureLoopRunning) return;
+  try {
+    if (overlayWindow && overlayWindow.isVisible() && Date.now() >= holdAutoUntil) {
+      const changed =
+        transcriptVersion !== lastAnalyzed.transcriptVersion ||
+        screenChanged(await captureFingerprint(), lastAnalyzed.fingerprint);
+      if (changed) await runAnalysisCycle();
+    }
+  } catch (err) {
+    console.error('[overlay] auto cycle failed:', err.message || err);
+  } finally {
+    if (captureLoopRunning && !captureTimer) {
+      captureTimer = setTimeout(autoTick, CAPTURE_INTERVAL_MS);
+    }
+  }
+}
+
 function startCaptureLoop() {
-  if (captureTimer) return;
-  captureTimer = setInterval(() => {
-    runAnalysisCycle();
-  }, CAPTURE_INTERVAL_MS);
+  if (captureLoopRunning) return;
+  captureLoopRunning = true;
+  captureTimer = setTimeout(autoTick, CAPTURE_INTERVAL_MS);
 }
 
 function stopCaptureLoop() {
+  captureLoopRunning = false;
   if (captureTimer) {
-    clearInterval(captureTimer);
+    clearTimeout(captureTimer);
     captureTimer = null;
   }
 }
@@ -233,6 +297,7 @@ function stopCaptureLoop() {
 function registerShortcuts() {
   const toggleOk = globalShortcut.register('CommandOrControl+Shift+Space', toggleOverlay);
   const forceOk = globalShortcut.register('CommandOrControl+Shift+R', () => {
+    holdAutoUntil = 0;
     runAnalysisCycle();
   });
 
@@ -299,16 +364,43 @@ async function transcribeAudioChunk(arrayBuffer) {
   }
 }
 
+// Whisper jobs run one at a time in arrival order. Running them in parallel
+// let a slow segment finish after a later one, scrambling the transcript, and
+// let jobs pile up without bound when whisper was slower than real time.
+const pendingAudio = [];
+let transcribing = false;
+
+async function drainAudioQueue() {
+  if (transcribing) return;
+  transcribing = true;
+  try {
+    while (pendingAudio.length > 0) {
+      await transcribeAudioChunk(pendingAudio.shift());
+    }
+  } finally {
+    transcribing = false;
+  }
+}
+
 ipcMain.on('audio:chunk', (_event, arrayBuffer) => {
-  transcribeAudioChunk(arrayBuffer);
+  pendingAudio.push(arrayBuffer);
+  if (pendingAudio.length > MAX_PENDING_TRANSCRIPTIONS) {
+    const dropped = pendingAudio.length - MAX_PENDING_TRANSCRIPTIONS;
+    pendingAudio.splice(0, dropped);
+    console.warn(`[overlay] transcription falling behind - dropped ${dropped} oldest audio segment(s)`);
+  }
+  drainAudioQueue();
 });
 
 ipcMain.handle('manual:ask', async (_event, question) => {
-  // Restart the auto-capture timer around the manual ask so the next
-  // automatic tick doesn't immediately clobber the answer on screen.
-  stopCaptureLoop();
-  await runAnalysisCycle(question);
-  startCaptureLoop();
+  // Hold off automatic cycles while the question runs and for a while after,
+  // so the answer isn't immediately replaced by an auto refresh.
+  holdAutoUntil = Infinity;
+  try {
+    await runAnalysisCycle(question);
+  } finally {
+    holdAutoUntil = Date.now() + MANUAL_ANSWER_HOLD_MS;
+  }
 });
 
 ipcMain.on('app:quit', () => {
