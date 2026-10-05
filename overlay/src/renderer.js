@@ -43,8 +43,12 @@ window.overlayAPI.onDone(() => {
 });
 
 window.overlayAPI.onError((message) => {
+  // Keep any partial answer that already streamed in and show why it stopped
+  // underneath it, rather than wiping it.
   responseText.classList.add('error');
-  responseText.textContent = `Error: ${message}`;
+  responseText.textContent = currentResponseBuffer
+    ? `${currentResponseBuffer}\n\n⚠ Stopped: ${message}`
+    : `Error: ${message}`;
   setStatus('error');
 });
 

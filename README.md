@@ -82,9 +82,21 @@ Starts an Express + TypeScript server on `http://localhost:3232` (override with
    multimodal input outright (HTTP 400: "model does not support multimodal
    requests") rather than ignoring it.
 
-`POST /api/cluely/analyze` accepts `{ screenshot?, transcript?, question?,
-stream? }`. Responses stream back chunk-by-chunk by default; set
-`"stream": false` for a single non-streaming JSON response instead.
+`POST /api/analyze` accepts `{ screenshot?, transcript?, question?,
+stream? }`. By default the response streams back as NDJSON, one event per
+line:
+
+```
+{"type":"chunk","text":"..."}     // a piece of the answer
+{"type":"error","message":"..."}  // something failed mid-stream (Ollama error, cut connection, bad line)
+{"type":"done","model":"llama3"}  // finished cleanly; names the model that answered
+```
+
+Every stream ends with exactly one `error` or `done`, so the overlay can show
+*why* an answer stopped instead of just going quiet. Set `"stream": false` for
+a single `{ response, model }` JSON payload instead. If the client disconnects
+(e.g. a typed question interrupts an automatic cycle), the server aborts its
+Ollama request.
 
 ## 2. Whisper model download (one-time)
 
@@ -111,10 +123,18 @@ npm start
 
 - **Ctrl/Cmd+Shift+Space** — show/hide the overlay
 - **Ctrl/Cmd+Shift+R** — force an immediate screenshot + analysis cycle
-- Otherwise it captures a screenshot every 3s, transcribes system audio (via
-  BlackHole - see prerequisite #5 above) in ~5s segments, and sends
-  `{ screenshot, transcript, question? }` to the backend, streaming the
-  response into the overlay card as it arrives.
+- **Typing a question** always gets answered: it interrupts any automatic
+  cycle that's running, and its answer stays on screen for 20s before
+  automatic updates may replace it.
+- Otherwise, about 3s after each cycle *finishes*, it checks whether anything
+  changed — a tiny 32×18 screen fingerprint plus new transcript words — and
+  only then captures a screenshot (downscaled to 1280px wide) and sends
+  `{ screenshot, transcript }` to the backend. A static screen with no new
+  speech doesn't trigger new requests, and cycles never overlap. Automatic
+  cycles pause while the overlay is hidden.
+- System audio (via BlackHole - see prerequisite #5 above) is transcribed in
+  ~5s segments, one at a time and in order. If whisper can't keep up, the
+  oldest waiting segments are dropped so the transcript stays current.
 - If BlackHole isn't installed/configured, the overlay logs a warning to the
   DevTools console and simply skips audio transcription — screenshot-based
   analysis still works.
@@ -123,8 +143,12 @@ Configure the backend URL and Whisper model via env vars if you change
 defaults:
 
 ```bash
-CLUELY_BACKEND_URL=http://localhost:3232 WHISPER_MODEL_NAME=base.en npm start
+DEKI_BACKEND_URL=http://localhost:3232 WHISPER_MODEL_NAME=base.en npm start
 ```
+
+`*.en` Whisper models are English-only, so transcription language is pinned
+to `en` for them and auto-detected for multilingual models. Set
+`WHISPER_LANGUAGE` (e.g. `es`) to override.
 
 ## Notes
 

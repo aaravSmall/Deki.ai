@@ -31,26 +31,45 @@ interface AnalyzeRequestBody {
 interface OllamaGenerateChunk {
   response?: string;
   done?: boolean;
+  error?: string;
 }
 
-async function callOllama(model: string, prompt: string, images: string[] | undefined, stream: boolean) {
+// Events streamed back to the overlay, one JSON object per line (NDJSON).
+// A plain-text stream can't tell the client *why* it stopped, so errors that
+// happen after streaming has started (Ollama crash, model unloaded, bad line)
+// are sent as an explicit `error` event, and a clean finish ends with `done`.
+// A stream that ends without either means the connection was cut.
+type StreamEvent =
+  | { type: 'chunk'; text: string }
+  | { type: 'error'; message: string }
+  | { type: 'done'; model: string };
+
+async function callOllama(
+  model: string,
+  prompt: string,
+  images: string[] | undefined,
+  stream: boolean,
+  signal?: AbortSignal
+) {
   return fetch(`${OLLAMA_URL}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, prompt, images, stream }),
+    signal,
   });
 }
 
 // Captions the screenshot with a short, direct prompt (best-effort). Returns
 // null on any failure - the caller falls back to reasoning without screen
 // context rather than failing the whole request.
-async function captionScreenshot(screenshot: string): Promise<string | null> {
+async function captionScreenshot(screenshot: string, signal: AbortSignal): Promise<string | null> {
   try {
     const response = await callOllama(
       VISION_MODEL,
       'Describe what is currently shown on the screen in detail.',
       [screenshot],
-      false
+      false,
+      signal
     );
     if (!response.ok) {
       console.warn(`[server] vision model "${VISION_MODEL}" failed to caption screenshot: status ${response.status}`);
@@ -59,6 +78,7 @@ async function captionScreenshot(screenshot: string): Promise<string | null> {
     const data = (await response.json()) as OllamaGenerateChunk;
     return data.response?.trim() || null;
   } catch (err) {
+    if (signal.aborted) return null;
     console.warn(`[server] vision model "${VISION_MODEL}" unreachable:`, (err as Error).message);
     return null;
   }
@@ -80,8 +100,8 @@ function buildPrompt(transcript: string, question: string | undefined, screenDes
   return parts.join('\n');
 }
 
-async function tryTextModel(model: string, prompt: string, stream: boolean) {
-  const response = await callOllama(model, prompt, undefined, stream);
+async function tryTextModel(model: string, prompt: string, stream: boolean, signal: AbortSignal) {
+  const response = await callOllama(model, prompt, undefined, stream, signal);
   if (!response.ok) {
     const errBody = await response.text().catch(() => '');
     throw new Error(`status ${response.status}: ${errBody}`);
@@ -89,16 +109,17 @@ async function tryTextModel(model: string, prompt: string, stream: boolean) {
   return response;
 }
 
-async function callTextModelWithFallback(prompt: string, stream: boolean) {
+async function callTextModelWithFallback(prompt: string, stream: boolean, signal: AbortSignal) {
   try {
-    const response = await tryTextModel(TEXT_MODEL, prompt, stream);
+    const response = await tryTextModel(TEXT_MODEL, prompt, stream, signal);
     return { response, modelUsed: TEXT_MODEL };
   } catch (err) {
+    if (signal.aborted) return null;
     console.warn(
       `[server] primary model "${TEXT_MODEL}" failed (${(err as Error).message}), falling back to "${TEXT_FALLBACK_MODEL}"`
     );
     try {
-      const response = await tryTextModel(TEXT_FALLBACK_MODEL, prompt, stream);
+      const response = await tryTextModel(TEXT_FALLBACK_MODEL, prompt, stream, signal);
       return { response, modelUsed: TEXT_FALLBACK_MODEL };
     } catch (fallbackErr) {
       console.error(`[server] fallback model "${TEXT_FALLBACK_MODEL}" also failed:`, (fallbackErr as Error).message);
@@ -107,14 +128,24 @@ async function callTextModelWithFallback(prompt: string, stream: boolean) {
   }
 }
 
-app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>, res: Response) => {
+app.post('/api/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>, res: Response) => {
   const { screenshot, transcript = '', question, stream } = req.body;
   const useStreaming = stream !== false;
 
-  const screenDescription = screenshot ? await captionScreenshot(screenshot) : null;
+  // If the overlay abandons this request (e.g. a typed question interrupts an
+  // automatic cycle), stop the Ollama work too instead of letting it finish
+  // generating an answer nobody will see.
+  const abort = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished) abort.abort();
+  });
+
+  const screenDescription = screenshot ? await captionScreenshot(screenshot, abort.signal) : null;
+  if (abort.signal.aborted) return;
   const prompt = buildPrompt(transcript, question, screenDescription);
 
-  const result = await callTextModelWithFallback(prompt, useStreaming);
+  const result = await callTextModelWithFallback(prompt, useStreaming, abort.signal);
+  if (abort.signal.aborted) return;
 
   if (!result) {
     res.status(502).json({ error: 'Ollama unreachable on both primary and fallback models' });
@@ -126,6 +157,10 @@ app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>,
 
   if (!useStreaming) {
     const data = (await ollamaResponse.json()) as OllamaGenerateChunk;
+    if (data.error) {
+      res.status(502).json({ error: data.error, model: modelUsed });
+      return;
+    }
     res.json({ response: data.response || '', model: modelUsed });
     return;
   }
@@ -135,12 +170,29 @@ app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>,
     return;
   }
 
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Transfer-Encoding', 'chunked');
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  const send = (event: StreamEvent) => res.write(JSON.stringify(event) + '\n');
 
   const reader = ollamaResponse.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let sawDone = false;
+
+  // Parses one Ollama NDJSON line. Returns an error message if the line
+  // reports (or is) a failure, otherwise forwards its text.
+  const handleLine = (line: string): string | null => {
+    if (!line.trim()) return null;
+    let parsed: OllamaGenerateChunk;
+    try {
+      parsed = JSON.parse(line) as OllamaGenerateChunk;
+    } catch {
+      return `Malformed line from Ollama: ${line.slice(0, 200)}`;
+    }
+    if (parsed.error) return `Ollama error: ${parsed.error}`;
+    if (parsed.response) send({ type: 'chunk', text: parsed.response });
+    if (parsed.done) sawDone = true;
+    return null;
+  };
 
   try {
     while (true) {
@@ -152,14 +204,21 @@ app.post('/api/cluely/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>,
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (!line.trim()) continue;
-        const parsed = JSON.parse(line) as OllamaGenerateChunk;
-        if (parsed.response) res.write(parsed.response);
+        const error = handleLine(line);
+        if (error) throw new Error(error);
       }
     }
-    res.end();
+    const tailError = handleLine(buffer + decoder.decode());
+    if (tailError) throw new Error(tailError);
+
+    if (!sawDone) throw new Error(`Ollama stream from "${modelUsed}" ended before the response finished`);
+    send({ type: 'done', model: modelUsed });
   } catch (err) {
-    console.error('[server] streaming error:', err);
+    if (abort.signal.aborted) return;
+    const message = (err as Error).message || String(err);
+    console.error('[server] streaming error:', message);
+    send({ type: 'error', message });
+  } finally {
     res.end();
   }
 });
