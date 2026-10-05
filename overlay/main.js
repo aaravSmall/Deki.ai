@@ -100,21 +100,38 @@ async function captureScreenshotBase64() {
 
 // --- analysis cycle: screenshot + transcript -> backend -> stream to renderer ---
 
-let analysisInFlight = false;
+// The cycle currently running, if any: { abort: AbortController, done: Promise }.
+// Automatic ticks skip if something is already running; a typed question
+// cancels whatever is running (the backend aborts its Ollama call when the
+// request is dropped) and then runs, so a question is never silently lost.
+let currentCycle = null;
 
 async function runAnalysisCycle(manualQuestion) {
   if (!overlayWindow) return;
-  if (analysisInFlight) return; // avoid overlapping cycles (auto-loop vs manual ask)
-  analysisInFlight = true;
 
+  if (currentCycle) {
+    if (!manualQuestion) return; // auto tick: let the running cycle finish
+    currentCycle.abort.abort();
+    await currentCycle.done.catch(() => {});
+    // Another question may have claimed the slot while we waited; newest wins.
+    if (currentCycle) {
+      currentCycle.abort.abort();
+      await currentCycle.done.catch(() => {});
+    }
+  }
+
+  const abort = new AbortController();
+  const done = runAnalysisCycleInner(manualQuestion, abort.signal);
+  const cycle = { abort, done };
+  currentCycle = cycle;
   try {
-    await runAnalysisCycleInner(manualQuestion);
+    await done;
   } finally {
-    analysisInFlight = false;
+    if (currentCycle === cycle) currentCycle = null;
   }
 }
 
-async function runAnalysisCycleInner(manualQuestion) {
+async function runAnalysisCycleInner(manualQuestion, signal) {
   let screenshot;
   try {
     screenshot = await captureScreenshotBase64();
@@ -136,6 +153,7 @@ async function runAnalysisCycleInner(manualQuestion) {
         transcript,
         question: manualQuestion || undefined,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -191,6 +209,7 @@ async function runAnalysisCycleInner(manualQuestion) {
 
     overlayWindow.webContents.send('ai:done');
   } catch (err) {
+    if (signal.aborted) return; // superseded by a newer question - not an error
     overlayWindow.webContents.send('ai:error', err.message || String(err));
   }
 }
