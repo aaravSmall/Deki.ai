@@ -151,16 +151,42 @@ async function runAnalysisCycleInner(manualQuestion) {
       return;
     }
 
+    // Backend streams NDJSON events: {type:'chunk'|'error'|'done', ...}.
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
+    let finished = false;
+
+    const handleEvent = (line) => {
+      if (!line.trim()) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        throw new Error(`Malformed stream line from backend: ${line.slice(0, 200)}`);
+      }
+      if (event.type === 'chunk' && event.text) {
+        overlayWindow.webContents.send('ai:chunk', event.text);
+      } else if (event.type === 'error') {
+        finished = true;
+        throw new Error(event.message || 'Backend reported an error mid-stream');
+      } else if (event.type === 'done') {
+        finished = true;
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunkText = decoder.decode(value, { stream: true });
-      if (chunkText) {
-        overlayWindow.webContents.send('ai:chunk', chunkText);
-      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) handleEvent(line);
+    }
+    handleEvent(buffer + decoder.decode());
+
+    if (!finished) {
+      throw new Error('Connection to backend closed before the response finished');
     }
 
     overlayWindow.webContents.send('ai:done');
