@@ -97,7 +97,18 @@ function createOverlayWindow() {
 
   overlayWindow.on('closed', () => {
     overlayWindow = null;
+    // Nothing left to show an answer in; stop the request (and, via the
+    // dropped connection, the backend's Ollama call) instead of finishing it.
+    if (currentCycle) currentCycle.abort.abort();
   });
+}
+
+// Every send goes through here: the window can be closed while a cycle is
+// still awaiting a screenshot or reading the stream, and calling
+// webContents.send on a destroyed window throws.
+function sendToRenderer(channel, ...args) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.webContents.send(channel, ...args);
 }
 
 function toggleOverlay() {
@@ -190,7 +201,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
   try {
     screenshot = await captureScreenshotBase64();
   } catch (err) {
-    overlayWindow.webContents.send('ai:error', `Screenshot capture failed: ${err.message || err}`);
+    sendToRenderer('ai:error', `Screenshot capture failed: ${err.message || err}`);
     return;
   }
 
@@ -200,7 +211,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
     transcriptVersion,
   };
 
-  overlayWindow.webContents.send('ai:chunk-start');
+  sendToRenderer('ai:chunk-start');
 
   try {
     const response = await fetch(`${BACKEND_URL}/api/analyze`, {
@@ -222,8 +233,8 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
     if (!response.body) {
       // Non-streaming fallback: whole response arrives as one JSON payload.
       const data = await response.json();
-      overlayWindow.webContents.send('ai:chunk', data.response || '');
-      overlayWindow.webContents.send('ai:done');
+      sendToRenderer('ai:chunk', data.response || '');
+      sendToRenderer('ai:done');
       return;
     }
 
@@ -242,7 +253,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
         throw new Error(`Malformed stream line from backend: ${line.slice(0, 200)}`);
       }
       if (event.type === 'chunk' && event.text) {
-        overlayWindow.webContents.send('ai:chunk', event.text);
+        sendToRenderer('ai:chunk', event.text);
       } else if (event.type === 'error') {
         finished = true;
         throw new Error(event.message || 'Backend reported an error mid-stream');
@@ -265,10 +276,10 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
       throw new Error('Connection to backend closed before the response finished');
     }
 
-    overlayWindow.webContents.send('ai:done');
+    sendToRenderer('ai:done');
   } catch (err) {
     if (signal.aborted) return; // superseded by a newer question - not an error
-    overlayWindow.webContents.send('ai:error', err.message || String(err));
+    sendToRenderer('ai:error', err.message || String(err));
   }
 }
 
