@@ -5,7 +5,7 @@
 // capture-exclusion API. It behaves like a normal window and stays visible in
 // screen shares/recordings (Zoom, Meet, etc.) - see README for why.
 
-const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, screen, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -104,6 +104,20 @@ function createOverlayWindow() {
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+
+  // Answers can contain links. Never navigate the overlay itself; open
+  // http(s) links in the default browser instead.
+  const openExternally = (url) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+  };
+  overlayWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternally(url);
+    return { action: 'deny' };
+  });
+  overlayWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault();
+    openExternally(url);
+  });
 
   overlayWindow.on('closed', () => {
     overlayWindow = null;

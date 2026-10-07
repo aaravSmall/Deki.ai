@@ -8,6 +8,8 @@
     "start": "electron ."
   },
   "dependencies": {
+    "dompurify": "^3.4.16",
+    "marked": "^18.1.0",
     "nodejs-whisper": "^0.3.0"
   },
   "devDependencies": {

@@ -55,16 +55,26 @@ window.overlayAPI.onAudioTranscribed((result) => {
 
 // --- streamed AI response wiring ---
 
+// Answers are Markdown (lists, code, bold). Re-render the whole buffer on
+// every chunk - answers are short, and partial Markdown renders fine.
+// DOMPurify strips anything executable the model might emit.
+function renderMarkdown(markdown) {
+  return DOMPurify.sanitize(marked.parse(markdown, { gfm: true, breaks: true }));
+}
+
+function renderAnswer() {
+  responseText.innerHTML = renderMarkdown(currentResponseBuffer);
+}
+
 window.overlayAPI.onChunkStart(() => {
   currentResponseBuffer = '';
-  responseText.classList.remove('error');
   responseText.textContent = '';
   setStatus('thinking');
 });
 
 window.overlayAPI.onChunk((text) => {
   currentResponseBuffer += text;
-  responseText.textContent = currentResponseBuffer;
+  renderAnswer();
 });
 
 window.overlayAPI.onDone(() => {
@@ -74,10 +84,15 @@ window.overlayAPI.onDone(() => {
 window.overlayAPI.onError((message) => {
   // Keep any partial answer that already streamed in and show why it stopped
   // underneath it, rather than wiping it.
-  responseText.classList.add('error');
-  responseText.textContent = currentResponseBuffer
-    ? `${currentResponseBuffer}\n\n⚠ Stopped: ${message}`
-    : `Error: ${message}`;
+  if (currentResponseBuffer) {
+    renderAnswer();
+  } else {
+    responseText.textContent = '';
+  }
+  const note = document.createElement('div');
+  note.className = 'stream-error';
+  note.textContent = currentResponseBuffer ? `⚠ Stopped: ${message}` : `Error: ${message}`;
+  responseText.appendChild(note);
   setStatus('error');
 });
 

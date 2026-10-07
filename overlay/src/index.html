@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- Answers are model output rendered as HTML: only local scripts/styles,
+       and no remote images, so nothing in an answer can phone home. -->
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+  />
   <title>Deki.ai</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -30,6 +36,8 @@
     </form>
   </div>
 
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+  <script src="../node_modules/dompurify/dist/purify.min.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
