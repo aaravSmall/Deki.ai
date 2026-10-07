@@ -111,9 +111,18 @@ function toggleOverlay() {
 
 // --- screenshot capture ---
 
+// desktopCapturer doesn't order sources by display, so with more than one
+// monitor sources[0] can be any of them. Match on display_id, falling back to
+// the first source only when the platform leaves display_id blank (some Linux
+// setups do) or there's a single screen anyway.
+function pickPrimarySource(sources) {
+  const primaryId = String(screen.getPrimaryDisplay().id);
+  return sources.find((source) => source.display_id === primaryId) || sources[0];
+}
+
 async function capturePrimaryScreen(thumbnailSize) {
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
-  const primarySource = sources[0];
+  const primarySource = pickPrimarySource(sources);
   if (!primarySource || primarySource.thumbnail.isEmpty()) return null;
   return primarySource.thumbnail;
 }
