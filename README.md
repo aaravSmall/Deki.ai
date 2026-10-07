@@ -138,6 +138,8 @@ npm start
 - **Typing a question** always gets answered: it interrupts any automatic
   cycle that's running, and its answer stays on screen for 20s before
   automatic updates may replace it.
+- Drag the header to move the overlay and the bottom-right corner to resize
+  it; its size and position are remembered between launches.
 - **Answer / Transcript / History** tabs: the latest answer, the rolling
   transcript the model is seeing, and the last 20 answers (marked as typed
   questions or automatic, and whether they were interrupted). Automatic

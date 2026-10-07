@@ -13,6 +13,7 @@ const { execFile } = require('child_process');
 const util = require('util');
 
 const { extractSpeech } = require('./lib/transcript');
+const windowState = require('./lib/windowState');
 
 const execFileAsync = util.promisify(execFile);
 
@@ -80,18 +81,27 @@ function getTranscriptText() {
 
 // --- overlay window ---
 
+function windowStatePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
 function createOverlayWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width } = primaryDisplay.workAreaSize;
+  const bounds = windowState.restoreBounds(
+    windowState.loadSavedBounds(windowStatePath()),
+    screen.getAllDisplays().map((display) => display.workArea),
+    screen.getPrimaryDisplay().workArea
+  );
 
   overlayWindow = new BrowserWindow({
-    width: 420,
-    height: 340,
-    x: width - 440,
-    y: 40,
+    ...bounds,
+    minWidth: windowState.MIN_SIZE.width,
+    minHeight: windowState.MIN_SIZE.height,
     frame: false,
     transparent: true,
-    resizable: false,
+    // Native edge resizing works for transparent frameless windows on macOS
+    // and Linux but is unreliable on Windows; the corner grip in the UI
+    // (window:resize) works everywhere.
+    resizable: process.platform !== 'win32',
     hasShadow: false,
     skipTaskbar: true,
     show: true,
@@ -118,6 +128,23 @@ function createOverlayWindow() {
   overlayWindow.webContents.on('will-navigate', (event, url) => {
     event.preventDefault();
     openExternally(url);
+  });
+
+  // Remember where the user put the overlay and how big they made it.
+  let saveTimer = null;
+  const persistBounds = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        windowState.saveBounds(windowStatePath(), overlayWindow.getBounds());
+      }
+    }, 300);
+  };
+  overlayWindow.on('resize', persistBounds);
+  overlayWindow.on('move', persistBounds);
+  overlayWindow.on('close', () => {
+    clearTimeout(saveTimer);
+    windowState.saveBounds(windowStatePath(), overlayWindow.getBounds());
   });
 
   overlayWindow.on('closed', () => {
@@ -467,6 +494,13 @@ ipcMain.handle('app:config', () => ({
   audioDevicePattern: AUDIO_DEVICE_PATTERN,
   transcriberAvailable: Boolean(nodewhisper),
 }));
+
+// Corner-grip resizing from the renderer (see resizable above).
+ipcMain.on('window:resize', (_event, size) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const { width, height } = windowState.clampSize(size || {});
+  overlayWindow.setSize(width, height);
+});
 
 ipcMain.on('app:quit', () => {
   app.quit();

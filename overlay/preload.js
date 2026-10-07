@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   askQuestion: (question) => ipcRenderer.invoke('manual:ask', question),
   quitApp: () => ipcRenderer.send('app:quit'),
   getConfig: () => ipcRenderer.invoke('app:config'),
+  resizeWindow: (width, height) => ipcRenderer.send('window:resize', { width, height }),
 
   // Main -> renderer (streamed AI response + status)
   onChunkStart: (callback) => ipcRenderer.on('ai:chunk-start', (_event, meta) => callback(meta)),

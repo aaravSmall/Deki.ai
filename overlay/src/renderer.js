@@ -32,6 +32,39 @@ function setStatus(state) {
   if (state === 'error') statusDot.classList.add('error');
 }
 
+// --- corner-grip resizing ---
+//
+// Frameless transparent windows can't be edge-resized on every OS, so the
+// grip in the bottom-right corner asks the main process to resize instead.
+// The main process clamps to a minimum size and remembers the result.
+
+const resizeGrip = document.getElementById('resize-grip');
+let resizeStart = null;
+
+resizeGrip.addEventListener('pointerdown', (event) => {
+  resizeStart = {
+    x: event.screenX,
+    y: event.screenY,
+    width: window.outerWidth,
+    height: window.outerHeight,
+  };
+  resizeGrip.setPointerCapture(event.pointerId);
+});
+
+resizeGrip.addEventListener('pointermove', (event) => {
+  if (!resizeStart) return;
+  window.overlayAPI.resizeWindow(
+    resizeStart.width + event.screenX - resizeStart.x,
+    resizeStart.height + event.screenY - resizeStart.y
+  );
+});
+
+const endResize = () => {
+  resizeStart = null;
+};
+resizeGrip.addEventListener('pointerup', endResize);
+resizeGrip.addEventListener('pointercancel', endResize);
+
 // --- shortcut hint ---
 //
 // The shortcuts are registered as CommandOrControl+Shift+..., so the hint has
