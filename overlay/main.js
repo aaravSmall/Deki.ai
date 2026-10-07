@@ -12,6 +12,8 @@ const os = require('os');
 const { execFile } = require('child_process');
 const util = require('util');
 
+const { cleanWhisperOutput } = require('./lib/transcript');
+
 const execFileAsync = util.promisify(execFile);
 
 const BACKEND_URL = process.env.DEKI_BACKEND_URL || 'http://localhost:3232';
@@ -349,7 +351,7 @@ async function transcribeAudioChunk(arrayBuffer) {
   try {
     await convertToWav16kMono(rawPath, wavPath);
 
-    const text = await nodewhisper(wavPath, {
+    const rawOutput = await nodewhisper(wavPath, {
       modelName: WHISPER_MODEL,
       autoDownloadModelName: WHISPER_MODEL,
       removeWavFileAfterTranscription: true,
@@ -359,7 +361,8 @@ async function transcribeAudioChunk(arrayBuffer) {
       },
     });
 
-    appendTranscript(text);
+    // nodejs-whisper returns whisper-cli's raw stdout, timestamps included.
+    appendTranscript(cleanWhisperOutput(rawOutput));
   } catch (err) {
     console.error('[overlay] transcription failed:', err.message || err);
   } finally {
