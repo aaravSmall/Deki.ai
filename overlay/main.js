@@ -71,6 +71,7 @@ function appendTranscript(text) {
     transcriptWords = transcriptWords.slice(transcriptWords.length - TRANSCRIPT_WORD_LIMIT);
   }
   transcriptVersion++;
+  sendToRenderer('transcript:update', getTranscriptText());
 }
 
 function getTranscriptText() {
@@ -235,7 +236,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
     transcriptVersion,
   };
 
-  sendToRenderer('ai:chunk-start');
+  sendToRenderer('ai:chunk-start', { question: manualQuestion || null });
 
   try {
     const response = await fetch(`${BACKEND_URL}/api/analyze`, {

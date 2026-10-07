@@ -21,8 +21,25 @@
       <button id="close-btn" class="close-btn" title="Quit">&times;</button>
     </header>
 
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-view="answer" role="tab">Answer</button>
+      <button type="button" class="tab" data-view="transcript" role="tab">Transcript</button>
+      <button type="button" class="tab" data-view="history" role="tab">
+        History <span id="history-count" class="count"></span>
+      </button>
+    </nav>
+
     <main class="response-card">
-      <div id="response-text" class="response-text">Waiting for first capture…</div>
+      <section class="view active" data-view="answer">
+        <div id="response-text" class="response-text">Waiting for first capture…</div>
+      </section>
+      <section class="view" data-view="transcript">
+        <div id="transcript-text" class="transcript-text empty">No speech transcribed yet.</div>
+      </section>
+      <section class="view" data-view="history">
+        <ol id="history-list" class="history-list"></ol>
+        <div id="history-empty" class="empty">Finished answers will show up here.</div>
+      </section>
     </main>
 
     <form id="ask-form" class="ask-row">

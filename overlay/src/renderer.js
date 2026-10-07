@@ -9,6 +9,11 @@ const askForm = document.getElementById('ask-form');
 const askInput = document.getElementById('ask-input');
 const closeBtn = document.getElementById('close-btn');
 const audioStatus = document.getElementById('audio-status');
+const transcriptText = document.getElementById('transcript-text');
+const responseCard = document.querySelector('.response-card');
+const historyList = document.getElementById('history-list');
+const historyEmpty = document.getElementById('history-empty');
+const historyCount = document.getElementById('history-count');
 
 closeBtn.addEventListener('click', () => {
   window.overlayAPI.quitApp();
@@ -17,6 +22,9 @@ closeBtn.addEventListener('click', () => {
 const AUDIO_SEGMENT_MS = 5000;
 
 let currentResponseBuffer = '';
+// The answer currently streaming: { question, startedAt }, or null.
+let currentAnswer = null;
+const MAX_HISTORY = 20;
 
 function setStatus(state) {
   statusDot.classList.remove('thinking', 'error');
@@ -66,10 +74,80 @@ function renderAnswer() {
   responseText.innerHTML = renderMarkdown(currentResponseBuffer);
 }
 
-window.overlayAPI.onChunkStart(() => {
+// --- views: Answer / Transcript / History ---
+
+let activeView = 'answer';
+
+function showView(name) {
+  activeView = name;
+  document.querySelectorAll('.tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.view === name);
+  });
+  document.querySelectorAll('.view').forEach((view) => {
+    view.classList.toggle('active', view.dataset.view === name);
+  });
+  if (name === 'transcript') responseCard.scrollTop = responseCard.scrollHeight;
+  else responseCard.scrollTop = 0;
+}
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.addEventListener('click', () => showView(tab.dataset.view));
+});
+
+window.overlayAPI.onTranscript((text) => {
+  transcriptText.classList.toggle('empty', !text);
+  transcriptText.textContent = text || 'No speech transcribed yet.';
+  if (activeView === 'transcript') responseCard.scrollTop = responseCard.scrollHeight;
+});
+
+function formatTime(date) {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Files the answer that just finished (or was cut off) into History,
+// newest first.
+function archiveCurrentAnswer(outcome) {
+  if (!currentAnswer) return;
+  const answer = currentAnswer;
+  currentAnswer = null;
+  if (!currentResponseBuffer.trim()) return;
+
+  const item = document.createElement('li');
+  const meta = document.createElement('div');
+  meta.className = 'history-meta';
+  meta.textContent = `${formatTime(answer.startedAt)} · `;
+  if (answer.question) {
+    const q = document.createElement('span');
+    q.className = 'history-question';
+    q.textContent = `You asked: ${answer.question}`;
+    meta.appendChild(q);
+  } else {
+    meta.append('Auto');
+  }
+  if (outcome !== 'done') meta.append(` · ${outcome}`);
+
+  const body = document.createElement('div');
+  body.className = 'response-text';
+  body.innerHTML = renderMarkdown(currentResponseBuffer);
+
+  item.append(meta, body);
+  historyList.prepend(item);
+  while (historyList.children.length > MAX_HISTORY) historyList.lastElementChild.remove();
+  historyEmpty.hidden = true;
+  historyCount.textContent = `(${historyList.children.length})`;
+}
+
+window.overlayAPI.onChunkStart((meta) => {
+  // A new cycle can start while one is still streaming (a typed question
+  // interrupts an automatic one) - keep what the old one had produced.
+  archiveCurrentAnswer('interrupted');
+  currentAnswer = { question: (meta && meta.question) || null, startedAt: new Date() };
   currentResponseBuffer = '';
   responseText.textContent = '';
   setStatus('thinking');
+  // Jump to the answer for a typed question; leave the user where they are
+  // for automatic refreshes so reading History/Transcript isn't interrupted.
+  if (currentAnswer.question) showView('answer');
 });
 
 window.overlayAPI.onChunk((text) => {
@@ -78,10 +156,12 @@ window.overlayAPI.onChunk((text) => {
 });
 
 window.overlayAPI.onDone(() => {
+  archiveCurrentAnswer('done');
   setStatus('idle');
 });
 
 window.overlayAPI.onError((message) => {
+  archiveCurrentAnswer('stopped early');
   // Keep any partial answer that already streamed in and show why it stopped
   // underneath it, rather than wiping it.
   if (currentResponseBuffer) {

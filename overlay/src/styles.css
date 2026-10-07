@@ -121,6 +121,89 @@ html, body {
   color: #f1f1f3;
 }
 
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 0;
+  -webkit-app-region: no-drag;
+}
+
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #8a8a93;
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: #d4d4d8;
+}
+
+.tab.active {
+  color: #f1f1f3;
+  border-bottom-color: rgba(255, 255, 255, 0.5);
+}
+
+.tab .count {
+  color: #6b6b73;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.empty {
+  color: #6b6b73;
+  font-size: 12px;
+}
+
+.transcript-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #c4c4cc;
+  white-space: pre-wrap;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history-list:empty {
+  display: none;
+}
+
+.history-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.history-list li:first-child {
+  padding-top: 0;
+}
+
+.history-meta {
+  font-size: 10px;
+  color: #8a8a93;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.history-meta .history-question {
+  text-transform: none;
+  letter-spacing: 0;
+  color: #d4d4d8;
+}
+
 .response-card {
   flex: 1;
   overflow-y: auto;

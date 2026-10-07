@@ -12,10 +12,11 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   getConfig: () => ipcRenderer.invoke('app:config'),
 
   // Main -> renderer (streamed AI response + status)
-  onChunkStart: (callback) => ipcRenderer.on('ai:chunk-start', () => callback()),
+  onChunkStart: (callback) => ipcRenderer.on('ai:chunk-start', (_event, meta) => callback(meta)),
   onChunk: (callback) => ipcRenderer.on('ai:chunk', (_event, text) => callback(text)),
   onDone: (callback) => ipcRenderer.on('ai:done', () => callback()),
   onError: (callback) => ipcRenderer.on('ai:error', (_event, message) => callback(message)),
+  onTranscript: (callback) => ipcRenderer.on('transcript:update', (_event, text) => callback(text)),
   onAudioTranscribed: (callback) =>
     ipcRenderer.on('audio:transcribed', (_event, result) => callback(result)),
 });
