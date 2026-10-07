@@ -5,6 +5,11 @@ transcribes speech locally with whisper.cpp, and streams a response from a
 local Ollama vision model. Everything runs on your machine — no cloud APIs,
 no API keys.
 
+![The deki.ai overlay docked over a code editor, showing a Markdown answer about a binary search function](docs/overlay-preview.png)
+
+<sub>UI preview: the real overlay page rendered over a mock editor with sample
+content. The models' answers will vary.</sub>
+
 This is a portfolio/learning project demonstrating screen capture, overlay
 windows, local LLM inference, and local speech-to-text. It is **not** built
 for use in real interviews or exams: the overlay does not hide itself from
