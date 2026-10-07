@@ -2,17 +2,12 @@
 // overlay and forwards it to a local Ollama instance for inference. Built by
 // a factory (no listen) so tests can run it against a fake Ollama.
 
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import type { ServerConfig } from './config';
+import { checkHealth } from './health';
 import { buildPrompt, OllamaClient, type FetchLike, type OllamaGenerateChunk } from './ollama';
 import { relayOllamaStream, type StreamEvent } from './stream';
-
-interface AnalyzeRequestBody {
-  screenshot?: string;
-  transcript?: string;
-  question?: string;
-  stream?: boolean;
-}
+import { validateAnalyzeBody } from './validate';
 
 export function createApp(config: ServerConfig, fetchImpl: FetchLike = fetch) {
   const app = express();
@@ -20,9 +15,18 @@ export function createApp(config: ServerConfig, fetchImpl: FetchLike = fetch) {
 
   const ollama = new OllamaClient(config, fetchImpl);
 
-  app.post('/api/analyze', async (req: Request<{}, {}, AnalyzeRequestBody>, res: Response) => {
-    const { screenshot, transcript = '', question, stream } = req.body;
-    const useStreaming = stream !== false;
+  app.get('/health', async (_req: Request, res: Response) => {
+    const report = await checkHealth(config, fetchImpl);
+    res.status(report.ok ? 200 : 503).json(report);
+  });
+
+  app.post('/api/analyze', async (req: Request, res: Response) => {
+    const validation = validateAnalyzeBody(req.body);
+    if (!validation.ok) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const { screenshot, transcript, question, stream: useStreaming } = validation.value;
 
     // If the overlay abandons this request (e.g. a typed question interrupts
     // an automatic cycle), stop the Ollama work too instead of letting it
@@ -69,6 +73,26 @@ export function createApp(config: ServerConfig, fetchImpl: FetchLike = fetch) {
     } finally {
       res.end();
     }
+  });
+
+  // express.json() failures (bad JSON, body over the size limit) would
+  // otherwise come back as an HTML error page.
+  app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    const status = err.status && err.status >= 400 && err.status < 500 ? err.status : 500;
+    const message =
+      err.type === 'entity.too.large'
+        ? 'Request body too large (limit 15mb)'
+        : err.type === 'entity.parse.failed'
+          ? 'Request body is not valid JSON'
+          : status === 500
+            ? 'Internal server error'
+            : err.message;
+    if (status === 500) console.error('[server] unhandled error:', err);
+    res.status(status).json({ error: message });
   });
 
   return app;

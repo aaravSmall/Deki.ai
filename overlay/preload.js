@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   onChunk: (callback) => ipcRenderer.on('ai:chunk', (_event, text) => callback(text)),
   onDone: (callback) => ipcRenderer.on('ai:done', () => callback()),
   onError: (callback) => ipcRenderer.on('ai:error', (_event, message) => callback(message)),
+  onHealth: (callback) => ipcRenderer.on('backend:health', (_event, health) => callback(health)),
   onTranscript: (callback) => ipcRenderer.on('transcript:update', (_event, text) => callback(text)),
   onAudioTranscribed: (callback) =>
     ipcRenderer.on('audio:transcribed', (_event, result) => callback(result)),

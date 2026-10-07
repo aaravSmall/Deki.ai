@@ -102,3 +102,29 @@ test('sends one JSON payload when stream is false', async () => {
     await close();
   }
 });
+
+test('rejects an invalid body with a JSON 400 before calling Ollama', async () => {
+  const { response, calls, close } = await analyze({}, { transcript: 42 });
+  try {
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /"transcript" must be a string/);
+    assert.equal(calls.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test('answers malformed JSON with a JSON 400', async () => {
+  const server = await listen(createApp(testConfig, fakeOllama({}).fetchImpl));
+  try {
+    const response = await fetch(`${server.baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not json',
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'Request body is not valid JSON' });
+  } finally {
+    await server.close();
+  }
+});

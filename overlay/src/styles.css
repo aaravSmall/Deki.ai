@@ -208,6 +208,23 @@ html, body {
   color: #d4d4d8;
 }
 
+.health-banner {
+  margin: 8px 12px 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #fca5a5;
+  font-size: 11px;
+  line-height: 1.4;
+  user-select: text;
+  -webkit-app-region: no-drag;
+}
+
+.health-banner[hidden] {
+  display: none;
+}
+
 .response-card {
   flex: 1;
   overflow-y: auto;

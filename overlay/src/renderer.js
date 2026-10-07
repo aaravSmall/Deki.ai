@@ -122,6 +122,23 @@ function renderAnswer() {
   responseText.innerHTML = renderMarkdown(currentResponseBuffer);
 }
 
+// --- backend health banner ---
+//
+// Shown while the backend, Ollama, or a model is missing; automatic
+// refreshes are paused in the meantime (typed questions still go through).
+
+const healthBanner = document.getElementById('health-banner');
+
+window.overlayAPI.onHealth(({ ok, message }) => {
+  healthBanner.hidden = ok;
+  healthBanner.textContent = ok ? '' : `${message} · automatic updates paused`;
+  if (ok) {
+    if (statusDot.classList.contains('error') && !currentAnswer) setStatus('idle');
+  } else if (!currentAnswer) {
+    setStatus('error');
+  }
+});
+
 // --- views: Answer / Transcript / History ---
 
 let activeView = 'answer';

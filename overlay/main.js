@@ -14,6 +14,7 @@ const util = require('util');
 
 const { extractSpeech } = require('./lib/transcript');
 const windowState = require('./lib/windowState');
+const { describeHealth } = require('./lib/health');
 
 const execFileAsync = util.promisify(execFile);
 
@@ -335,13 +336,50 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
   }
 }
 
+// --- backend health ---
+//
+// Polls the backend's /health so the overlay can say exactly what's missing
+// (backend down, Ollama down, a model not pulled) instead of failing every
+// cycle. Automatic cycles are skipped while unhealthy; typed questions and
+// Ctrl/Cmd+Shift+R still go through, so their errors are shown as usual.
+
+const HEALTH_RETRY_MS = 5000; // while something is wrong
+const HEALTH_RECHECK_MS = 30000; // while everything is fine
+let backendHealth = { ok: true, message: null, checked: false };
+let healthTimer = null;
+
+async function checkBackendHealth() {
+  let result;
+  try {
+    const response = await fetch(`${BACKEND_URL}/health`, { signal: AbortSignal.timeout(5000) });
+    const report = await response.json().catch(() => null);
+    result = { status: response.status, report };
+  } catch (err) {
+    result = { error: err };
+  }
+  const message = describeHealth({ backendUrl: BACKEND_URL, ...result });
+  const ok = message === null;
+  if (ok !== backendHealth.ok || message !== backendHealth.message || !backendHealth.checked) {
+    if (!ok) console.warn('[overlay] backend not ready:', message);
+    sendToRenderer('backend:health', { ok, message });
+  }
+  backendHealth = { ok, message, checked: true };
+  return backendHealth;
+}
+
+async function healthLoop() {
+  clearTimeout(healthTimer); // a page reload re-runs this; keep one loop
+  const { ok } = await checkBackendHealth();
+  healthTimer = setTimeout(healthLoop, ok ? HEALTH_RECHECK_MS : HEALTH_RETRY_MS);
+}
+
 // Self-pacing loop: each tick waits for the previous cycle to finish, then
 // only runs a new analysis if the screen or transcript actually changed.
 async function autoTick() {
   captureTimer = null;
   if (!captureLoopRunning) return;
   try {
-    if (overlayWindow && overlayWindow.isVisible() && Date.now() >= holdAutoUntil) {
+    if (overlayWindow && overlayWindow.isVisible() && backendHealth.ok && Date.now() >= holdAutoUntil) {
       const changed =
         transcriptVersion !== lastAnalyzed.transcriptVersion ||
         screenChanged(await captureFingerprint(), lastAnalyzed.fingerprint);
@@ -511,10 +549,13 @@ ipcMain.on('app:quit', () => {
 app.whenReady().then(() => {
   createOverlayWindow();
   registerShortcuts();
+  // Report health once the page can receive it, then keep polling.
+  overlayWindow.webContents.once('did-finish-load', healthLoop);
   startCaptureLoop();
 });
 
 app.on('will-quit', () => {
+  clearTimeout(healthTimer);
   globalShortcut.unregisterAll();
   stopCaptureLoop();
 });

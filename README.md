@@ -95,7 +95,11 @@ Starts an Express + TypeScript server on `http://localhost:3232` (override with
    requests") rather than ignoring it.
 
 `POST /api/analyze` accepts `{ screenshot?, transcript?, question?,
-stream? }`. By default the response streams back as NDJSON, one event per
+stream? }`. Bodies are validated first: `screenshot` must be plain base64
+(no `data:` prefix), `transcript` is capped at 20,000 characters and
+`question` at 2,000, `stream` must be a boolean, and at least one of the
+three inputs must be non-empty. Invalid requests get a JSON
+`400 { "error": "..." }` without touching Ollama. By default the response streams back as NDJSON, one event per
 line:
 
 ```
@@ -109,6 +113,25 @@ Every stream ends with exactly one `error` or `done`, so the overlay can show
 a single `{ response, model }` JSON payload instead. If the client disconnects
 (e.g. a typed question interrupts an automatic cycle), the server aborts its
 Ollama request.
+
+`GET /health` reports whether Ollama is reachable and whether the configured
+models are pulled — `200` when ready, `503` otherwise:
+
+```json
+{
+  "ok": false,
+  "ollama": { "url": "http://localhost:11434", "reachable": true },
+  "models": {
+    "vision":   { "name": "moondream", "installed": false },
+    "text":     { "name": "llama3",    "installed": true },
+    "fallback": { "name": "mistral",   "installed": false }
+  }
+}
+```
+
+The overlay polls this on startup and shows a banner with the exact fix
+(start the backend, run `ollama serve`, or `ollama pull <model>`), pausing
+automatic updates until it's resolved.
 
 ## 2. Whisper model download (one-time)
 
