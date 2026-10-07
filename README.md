@@ -169,6 +169,29 @@ DEKI_BACKEND_URL=http://localhost:3232 WHISPER_MODEL_NAME=base.en DEKI_AUDIO_DEV
 to `en` for them and auto-detected for multilingual models. Set
 `WHISPER_LANGUAGE` (e.g. `es`) to override.
 
+## Development
+
+Both packages have tests (Node's built-in `node:test` runner) and ESLint;
+the server is also type-checked with `tsc`.
+
+```bash
+cd server
+npm run typecheck   # tsc --noEmit over app/ and test/
+npm run lint
+npm test            # stream relay + /api/analyze against a fake Ollama
+npm run build       # compile to dist/, then `npm start` runs it
+
+cd ../overlay
+npm run lint
+npm test            # whisper output cleanup + window position restore
+```
+
+The server is split so it can be tested without Ollama: `app/app.ts` builds
+the Express app around an injectable `fetch`, `app/ollama.ts` wraps the
+caption → reasoning pipeline, `app/stream.ts` relays Ollama's NDJSON stream,
+and `app/server.ts` just reads config and listens. The overlay's testable
+logic lives in Electron-free modules under `overlay/lib/`.
+
 ## Notes
 
 - Local-dev only: no deployment config, no CI/CD, no cloud hosting.
