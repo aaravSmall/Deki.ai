@@ -12,7 +12,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 const util = require('util');
 
-const { cleanWhisperOutput } = require('./lib/transcript');
+const { extractSpeech } = require('./lib/transcript');
 
 const execFileAsync = util.promisify(execFile);
 
@@ -362,7 +362,9 @@ async function transcribeAudioChunk(arrayBuffer) {
     });
 
     // nodejs-whisper returns whisper-cli's raw stdout, timestamps included.
-    appendTranscript(cleanWhisperOutput(rawOutput));
+    // extractSpeech also drops silence markers and filler hallucinations, so a
+    // quiet segment adds no words and doesn't trigger a re-analysis.
+    appendTranscript(extractSpeech(rawOutput));
   } catch (err) {
     console.error('[overlay] transcription failed:', err.message || err);
   } finally {
