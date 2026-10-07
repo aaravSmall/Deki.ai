@@ -36,6 +36,16 @@ const MANUAL_ANSWER_HOLD_MS = 20000;
 // this many so the transcript stays current instead of lagging further.
 const MAX_PENDING_TRANSCRIPTIONS = 3;
 const TRANSCRIPT_WORD_LIMIT = 500;
+// Which audio *input* device carries system audio. Each OS needs a loopback
+// device for this (see README); these defaults match their usual labels and
+// DEKI_AUDIO_DEVICE (a case-insensitive regex) overrides them.
+const DEFAULT_AUDIO_DEVICE_PATTERNS = {
+  darwin: 'blackhole', // BlackHole virtual driver
+  linux: 'monitor', // PulseAudio/PipeWire "Monitor of <output>" sources
+  win32: 'cable output|stereo mix', // VB-Audio Virtual Cable, or Realtek Stereo Mix
+};
+const AUDIO_DEVICE_PATTERN =
+  process.env.DEKI_AUDIO_DEVICE || DEFAULT_AUDIO_DEVICE_PATTERNS[process.platform] || 'blackhole';
 const WHISPER_MODEL = process.env.WHISPER_MODEL_NAME || 'base.en';
 // English-only models (*.en) can't auto-detect language, so pin them to 'en';
 // multilingual models default to auto-detection. WHISPER_LANGUAGE overrides.
@@ -333,8 +343,8 @@ function registerShortcuts() {
 
 // --- system audio -> local whisper.cpp transcription ---
 //
-// Renderer records system audio (via a BlackHole virtual input device, not
-// the microphone - see README) with MediaRecorder (webm/opus) and ships each
+// Renderer records system audio (via a loopback input device such as
+// BlackHole, not the microphone - see README) with MediaRecorder (webm/opus) and ships each
 // ~5s chunk over IPC as an ArrayBuffer. We convert it to 16kHz mono WAV with
 // ffmpeg (required on PATH - see README) and hand it to nodejs-whisper, which
 // shells out to a locally-built whisper.cpp binary. Nothing here calls out
@@ -431,6 +441,12 @@ ipcMain.handle('manual:ask', async (_event, question) => {
     holdAutoUntil = Date.now() + MANUAL_ANSWER_HOLD_MS;
   }
 });
+
+// Static settings the sandboxed renderer can't read from process.env itself.
+ipcMain.handle('app:config', () => ({
+  platform: process.platform,
+  audioDevicePattern: AUDIO_DEVICE_PATTERN,
+}));
 
 ipcMain.on('app:quit', () => {
   app.quit();

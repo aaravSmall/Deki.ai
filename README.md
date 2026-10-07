@@ -34,11 +34,15 @@ viewing a shared screen sees it too.
    # optional extra fallback for the reasoning stage if llama3 fails:
    ollama pull mistral
    ```
-5. **BlackHole (macOS only)** — a virtual audio driver, so the overlay
-   transcribes what's actually playing on your laptop (a call, a video, etc.)
-   instead of whatever your microphone happens to pick up. This is a system
-   audio driver install, not just an npm package, and needs a one-time manual
-   step:
+5. **A system-audio loopback device**, so the overlay transcribes what's
+   actually playing on your computer (a call, a video, etc.) instead of
+   whatever your microphone happens to pick up. The overlay looks for an audio
+   *input* whose name matches a per-OS default; set `DEKI_AUDIO_DEVICE` (a
+   case-insensitive regex or plain substring of the device name) to use a
+   different one.
+
+   **macOS — BlackHole** (default match: `blackhole`). This is a system audio
+   driver install, not just an npm package, and needs a one-time manual step:
    ```bash
    brew install blackhole-2ch
    # then reboot - the installer requires it to take effect
@@ -49,13 +53,21 @@ viewing a shared screen sees it too.
       "BlackHole 2ch"
    3. Set this new Multi-Output Device as your system output (System Settings
       → Sound → Output), so you still hear audio while it's also captured
-   4. Leave it set this way while using the overlay — the app looks for an
-      audio input device labeled "BlackHole" automatically
+   4. Leave it set this way while using the overlay
 
-   On Linux/Windows, system audio loopback capture isn't wired up in this
-   project yet; you'd need an equivalent virtual audio device (e.g. a
-   PulseAudio/PipeWire monitor source on Linux, or a virtual cable on
-   Windows) and to adjust `overlay/src/renderer.js`'s device matching.
+   **Linux — PulseAudio/PipeWire monitor source** (default match: `monitor`).
+   Every output device already has a "Monitor of …" input that carries what's
+   playing, so there's nothing to install. Check it's visible with
+   `pactl list short sources | grep monitor`. If you have several outputs,
+   point at the right one, e.g.
+   `DEKI_AUDIO_DEVICE="Monitor of Built-in Audio Analog Stereo"`.
+
+   **Windows — VB-Audio Virtual Cable or Stereo Mix** (default match:
+   `cable output|stereo mix`). Either install
+   [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and set "CABLE Input"
+   as your playback device (enable *Listen to this device* on "CABLE Output"
+   in the classic Sound control panel's Recording tab so you still hear it),
+   or enable the **Stereo Mix** recording device if your sound card has one.
 
 ## 1. Backend
 
@@ -132,10 +144,10 @@ npm start
   `{ screenshot, transcript }` to the backend. A static screen with no new
   speech doesn't trigger new requests, and cycles never overlap. Automatic
   cycles pause while the overlay is hidden.
-- System audio (via BlackHole - see prerequisite #5 above) is transcribed in
+- System audio (via the loopback device from prerequisite #5) is transcribed in
   ~5s segments, one at a time and in order. If whisper can't keep up, the
   oldest waiting segments are dropped so the transcript stays current.
-- If BlackHole isn't installed/configured, the overlay logs a warning to the
+- If no matching loopback device is found, the overlay logs a warning to the
   DevTools console and simply skips audio transcription — screenshot-based
   analysis still works.
 
@@ -143,7 +155,7 @@ Configure the backend URL and Whisper model via env vars if you change
 defaults:
 
 ```bash
-DEKI_BACKEND_URL=http://localhost:3232 WHISPER_MODEL_NAME=base.en npm start
+DEKI_BACKEND_URL=http://localhost:3232 WHISPER_MODEL_NAME=base.en DEKI_AUDIO_DEVICE=blackhole npm start
 ```
 
 `*.en` Whisper models are English-only, so transcription language is pinned

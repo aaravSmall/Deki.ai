@@ -14,7 +14,6 @@ closeBtn.addEventListener('click', () => {
 });
 
 const AUDIO_SEGMENT_MS = 5000;
-const BLACKHOLE_LABEL_MATCH = /blackhole/i;
 
 let currentResponseBuffer = '';
 
@@ -64,31 +63,43 @@ askForm.addEventListener('submit', async (event) => {
 
 // --- continuous system audio capture in ~5s self-contained segments ---
 //
-// Captures from a BlackHole virtual audio device (not the microphone) so the
-// transcript reflects what's actually playing on the laptop - a call, a
-// video, etc. - rather than whatever the mic happens to pick up. Requires
-// BlackHole to be installed and set as (or part of) the system output device;
-// see README for the one-time setup. Each segment is a fresh MediaRecorder
-// start/stop cycle so every blob is an independently-decodable webm file (a
-// single recorder with `timeslice` only puts container headers in the first
-// chunk, which breaks ffmpeg on later chunks). The small stop/restart gap is
-// an acceptable tradeoff for a demo.
+// Captures from a loopback input device (not the microphone) so the
+// transcript reflects what's actually playing on the computer - a call, a
+// video, etc. - rather than whatever the mic happens to pick up. Which device
+// that is depends on the OS: BlackHole on macOS, a PulseAudio/PipeWire
+// "Monitor of ..." source on Linux, VB-Audio Virtual Cable or Stereo Mix on
+// Windows. The main process supplies a label pattern for the current OS
+// (overridable with DEKI_AUDIO_DEVICE); see README for setup. Each segment is
+// a fresh MediaRecorder start/stop cycle so every blob is an
+// independently-decodable webm file (a single recorder with `timeslice` only
+// puts container headers in the first chunk, which breaks ffmpeg on later
+// chunks). The small stop/restart gap is an acceptable tradeoff for a demo.
 
 let audioStream = null;
 
-async function findBlackHoleDeviceId() {
-  let devices = await navigator.mediaDevices.enumerateDevices();
-  let match = devices.find((d) => d.kind === 'audioinput' && BLACKHOLE_LABEL_MATCH.test(d.label));
+function toDeviceMatcher(pattern) {
+  try {
+    return new RegExp(pattern, 'i');
+  } catch {
+    // Not a valid regex - treat it as a plain substring.
+    return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  }
+}
+
+async function findLoopbackDeviceId(matcher) {
+  const findMatch = (devices) =>
+    devices.find((d) => d.kind === 'audioinput' && matcher.test(d.label));
+
+  let match = findMatch(await navigator.mediaDevices.enumerateDevices());
 
   if (!match) {
     // Device labels are blank until permission has been granted at least
     // once; open the default input briefly just to unlock labels, then
-    // re-enumerate and look for BlackHole specifically.
+    // re-enumerate and look for the loopback device specifically.
     try {
       const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       tempStream.getTracks().forEach((track) => track.stop());
-      devices = await navigator.mediaDevices.enumerateDevices();
-      match = devices.find((d) => d.kind === 'audioinput' && BLACKHOLE_LABEL_MATCH.test(d.label));
+      match = findMatch(await navigator.mediaDevices.enumerateDevices());
     } catch (err) {
       console.error('[overlay] could not enumerate audio input devices:', err);
     }
@@ -98,22 +109,23 @@ async function findBlackHoleDeviceId() {
 }
 
 async function startAudioCaptureLoop() {
-  const blackHoleId = await findBlackHoleDeviceId();
+  const { audioDevicePattern } = await window.overlayAPI.getConfig();
+  const deviceId = await findLoopbackDeviceId(toDeviceMatcher(audioDevicePattern));
 
-  if (!blackHoleId) {
+  if (!deviceId) {
     console.warn(
-      '[overlay] BlackHole input device not found - system audio capture disabled. ' +
-        'See README for one-time setup (brew install blackhole-2ch + Audio MIDI Setup).'
+      `[overlay] No audio input matching /${audioDevicePattern}/i - system audio capture disabled. ` +
+        'See README for loopback device setup, or set DEKI_AUDIO_DEVICE to part of your device name.'
     );
     return;
   }
 
   try {
     audioStream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: blackHoleId } },
+      audio: { deviceId: { exact: deviceId } },
     });
   } catch (err) {
-    console.error('[overlay] failed to open BlackHole input:', err);
+    console.error('[overlay] failed to open system audio input:', err);
     return;
   }
 

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   sendAudioChunk: (arrayBuffer) => ipcRenderer.send('audio:chunk', arrayBuffer),
   askQuestion: (question) => ipcRenderer.invoke('manual:ask', question),
   quitApp: () => ipcRenderer.send('app:quit'),
+  getConfig: () => ipcRenderer.invoke('app:config'),
 
   // Main -> renderer (streamed AI response + status)
   onChunkStart: (callback) => ipcRenderer.on('ai:chunk-start', () => callback()),
