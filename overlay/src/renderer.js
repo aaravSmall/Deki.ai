@@ -32,6 +32,21 @@ function setStatus(state) {
   if (state === 'error') statusDot.classList.add('error');
 }
 
+// --- shortcut hint ---
+//
+// The shortcuts are registered as CommandOrControl+Shift+..., so the hint has
+// to match the OS: ⌘⇧ on macOS, Ctrl+Shift+ elsewhere.
+
+function shortcutLabel(platform, key) {
+  return platform === 'darwin' ? `⌘⇧${key}` : `Ctrl+Shift+${key}`;
+}
+
+window.overlayAPI.getConfig().then(({ platform }) => {
+  const hint = document.getElementById('shortcut-hint');
+  hint.textContent =
+    `${shortcutLabel(platform, 'Space')} hide · ${shortcutLabel(platform, 'R')} refresh`;
+});
+
 // --- audio status pill ---
 //
 // States: pending (still looking for a device), live (capturing and

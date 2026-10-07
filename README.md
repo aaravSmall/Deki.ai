@@ -133,8 +133,8 @@ cd overlay
 npm start
 ```
 
-- **Ctrl/Cmd+Shift+Space** — show/hide the overlay
-- **Ctrl/Cmd+Shift+R** — force an immediate screenshot + analysis cycle
+- **Ctrl+Shift+Space** (⌘⇧Space on macOS) — show/hide the overlay
+- **Ctrl+Shift+R** (⌘⇧R on macOS) — force an immediate screenshot + analysis cycle
 - **Typing a question** always gets answered: it interrupts any automatic
   cycle that's running, and its answer stays on screen for 20s before
   automatic updates may replace it.
