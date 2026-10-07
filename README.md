@@ -222,7 +222,9 @@ logic lives in Electron-free modules under `overlay/lib/`.
 
 ## Notes
 
-- Local-dev only: no deployment config, no CI/CD, no cloud hosting.
+- Local-dev only: no deployment config or cloud hosting. GitHub Actions CI
+  (`.github/workflows/ci.yml`) runs the server typecheck, lint, tests and
+  build, plus the overlay lint and tests, on every push to `main` and every PR.
 - All inference (LLM + speech-to-text) runs on-device against Ollama and
   whisper.cpp — nothing leaves your machine.
 - The overlay does not attempt to hide from screen capture/sharing by design.
