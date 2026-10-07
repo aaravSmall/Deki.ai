@@ -340,8 +340,14 @@ html, body {
   cursor: pointer;
 }
 
-.ask-row button:hover {
+.ask-row button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.16);
+}
+
+.ask-row input:disabled,
+.ask-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .response-card::-webkit-scrollbar {

@@ -178,12 +178,31 @@ window.overlayAPI.onError((message) => {
 
 // --- manual question input ---
 
+// One typed question at a time: the input is locked until its answer has
+// finished streaming, so questions can't stack up and cancel each other.
+const askButton = askForm.querySelector('button[type="submit"]');
+const ASK_PLACEHOLDER = askInput.placeholder;
+
+function setAsking(asking) {
+  askInput.disabled = asking;
+  askButton.disabled = asking;
+  askInput.placeholder = asking ? 'Answering…' : ASK_PLACEHOLDER;
+}
+
 askForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const question = askInput.value.trim();
-  if (!question) return;
+  if (!question || askInput.disabled) return;
   askInput.value = '';
-  await window.overlayAPI.askQuestion(question);
+  setAsking(true);
+  try {
+    await window.overlayAPI.askQuestion(question);
+  } catch (err) {
+    console.error('[overlay] question failed:', err);
+  } finally {
+    setAsking(false);
+    askInput.focus();
+  }
 });
 
 // --- continuous system audio capture in ~5s self-contained segments ---
