@@ -8,6 +8,7 @@ const responseText = document.getElementById('response-text');
 const askForm = document.getElementById('ask-form');
 const askInput = document.getElementById('ask-input');
 const closeBtn = document.getElementById('close-btn');
+const audioStatus = document.getElementById('audio-status');
 
 closeBtn.addEventListener('click', () => {
   window.overlayAPI.quitApp();
@@ -22,6 +23,35 @@ function setStatus(state) {
   if (state === 'thinking') statusDot.classList.add('thinking');
   if (state === 'error') statusDot.classList.add('error');
 }
+
+// --- audio status pill ---
+//
+// States: pending (still looking for a device), live (capturing and
+// transcribing), off (no loopback device - screen-only mode), error
+// (capturing, but transcription is failing). The tooltip says why.
+
+let heardTimer = null;
+let liveDetail = 'Capturing system audio';
+
+function setAudioStatus(state, detail) {
+  audioStatus.dataset.state = state;
+  audioStatus.title = detail;
+}
+
+window.overlayAPI.onAudioTranscribed((result) => {
+  if (!result.ok) {
+    setAudioStatus('error', `Transcription failing: ${result.message}`);
+    return;
+  }
+  if (audioStatus.dataset.state !== 'live') {
+    setAudioStatus('live', liveDetail);
+  }
+  if (result.heardSpeech) {
+    audioStatus.classList.add('heard');
+    clearTimeout(heardTimer);
+    heardTimer = setTimeout(() => audioStatus.classList.remove('heard'), 800);
+  }
+});
 
 // --- streamed AI response wiring ---
 
@@ -86,7 +116,7 @@ function toDeviceMatcher(pattern) {
   }
 }
 
-async function findLoopbackDeviceId(matcher) {
+async function findLoopbackDevice(matcher) {
   const findMatch = (devices) =>
     devices.find((d) => d.kind === 'audioinput' && matcher.test(d.label));
 
@@ -105,30 +135,43 @@ async function findLoopbackDeviceId(matcher) {
     }
   }
 
-  return match ? match.deviceId : null;
+  return match || null;
 }
 
 async function startAudioCaptureLoop() {
-  const { audioDevicePattern } = await window.overlayAPI.getConfig();
-  const deviceId = await findLoopbackDeviceId(toDeviceMatcher(audioDevicePattern));
+  const { audioDevicePattern, transcriberAvailable } = await window.overlayAPI.getConfig();
 
-  if (!deviceId) {
+  if (!transcriberAvailable) {
+    setAudioStatus('off', 'nodejs-whisper is not installed - run npm install in overlay/');
+    return;
+  }
+
+  const device = await findLoopbackDevice(toDeviceMatcher(audioDevicePattern));
+
+  if (!device) {
     console.warn(
       `[overlay] No audio input matching /${audioDevicePattern}/i - system audio capture disabled. ` +
         'See README for loopback device setup, or set DEKI_AUDIO_DEVICE to part of your device name.'
+    );
+    setAudioStatus(
+      'off',
+      `No audio input matching /${audioDevicePattern}/i - screen-only mode. See README to set up a loopback device.`
     );
     return;
   }
 
   try {
     audioStream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: deviceId } },
+      audio: { deviceId: { exact: device.deviceId } },
     });
   } catch (err) {
     console.error('[overlay] failed to open system audio input:', err);
+    setAudioStatus('error', `Could not open "${device.label}": ${err.message || err}`);
     return;
   }
 
+  liveDetail = `Capturing system audio from "${device.label}"`;
+  setAudioStatus('live', liveDetail);
   recordSegment();
 }
 

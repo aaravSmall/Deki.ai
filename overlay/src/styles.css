@@ -58,6 +58,45 @@ html, body {
   letter-spacing: 0.02em;
 }
 
+.audio-status {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 10px;
+  color: #9a9aa2;
+  cursor: default;
+}
+
+.audio-status::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  transition: box-shadow 0.2s;
+}
+
+.audio-status[data-state='live'] {
+  color: #4ade80;
+}
+
+.audio-status[data-state='live'].heard::before {
+  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.35);
+}
+
+.audio-status[data-state='off'] {
+  color: #6b6b73;
+  text-decoration: line-through;
+}
+
+.audio-status[data-state='error'] {
+  color: #f87171;
+}
+
 .hint {
   margin-left: auto;
   font-size: 10px;

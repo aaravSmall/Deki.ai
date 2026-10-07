@@ -394,9 +394,13 @@ async function transcribeAudioChunk(arrayBuffer) {
     // nodejs-whisper returns whisper-cli's raw stdout, timestamps included.
     // extractSpeech also drops silence markers and filler hallucinations, so a
     // quiet segment adds no words and doesn't trigger a re-analysis.
-    appendTranscript(extractSpeech(rawOutput));
+    const speech = extractSpeech(rawOutput);
+    appendTranscript(speech);
+    sendToRenderer('audio:transcribed', { ok: true, heardSpeech: Boolean(speech) });
   } catch (err) {
-    console.error('[overlay] transcription failed:', err.message || err);
+    const message = err.code === 'ENOENT' ? 'ffmpeg not found on PATH' : err.message || String(err);
+    console.error('[overlay] transcription failed:', message);
+    sendToRenderer('audio:transcribed', { ok: false, message });
   } finally {
     fs.rm(rawPath, { force: true }, () => {});
     fs.rm(wavPath, { force: true }, () => {});
@@ -446,6 +450,7 @@ ipcMain.handle('manual:ask', async (_event, question) => {
 ipcMain.handle('app:config', () => ({
   platform: process.platform,
   audioDevicePattern: AUDIO_DEVICE_PATTERN,
+  transcriberAvailable: Boolean(nodewhisper),
 }));
 
 ipcMain.on('app:quit', () => {
