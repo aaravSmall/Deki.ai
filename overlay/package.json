@@ -2,15 +2,22 @@
   "name": "deki-overlay",
   "version": "0.1.0",
   "private": true,
-  "description": "Electron overlay: screen + mic capture, local whisper.cpp transcription, streams responses from the local Ollama-backed server. No cloud APIs.",
+  "description": "Electron overlay: screen + system audio capture, local whisper.cpp transcription, streams responses from the local Ollama-backed server. No cloud APIs.",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "lint": "eslint .",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
+    "dompurify": "^3.4.16",
+    "marked": "^18.1.0",
     "nodejs-whisper": "^0.3.0"
   },
   "devDependencies": {
-    "electron": "^43.0.0"
+    "@eslint/js": "^10.0.1",
+    "electron": "^43.0.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0"
   }
 }

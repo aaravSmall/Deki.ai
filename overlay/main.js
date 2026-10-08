@@ -5,12 +5,16 @@
 // capture-exclusion API. It behaves like a normal window and stays visible in
 // screen shares/recordings (Zoom, Meet, etc.) - see README for why.
 
-const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, screen, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFile } = require('child_process');
 const util = require('util');
+
+const { extractSpeech } = require('./lib/transcript');
+const windowState = require('./lib/windowState');
+const { describeHealth } = require('./lib/health');
 
 const execFileAsync = util.promisify(execFile);
 
@@ -34,6 +38,16 @@ const MANUAL_ANSWER_HOLD_MS = 20000;
 // this many so the transcript stays current instead of lagging further.
 const MAX_PENDING_TRANSCRIPTIONS = 3;
 const TRANSCRIPT_WORD_LIMIT = 500;
+// Which audio *input* device carries system audio. Each OS needs a loopback
+// device for this (see README); these defaults match their usual labels and
+// DEKI_AUDIO_DEVICE (a case-insensitive regex) overrides them.
+const DEFAULT_AUDIO_DEVICE_PATTERNS = {
+  darwin: 'blackhole', // BlackHole virtual driver
+  linux: 'monitor', // PulseAudio/PipeWire "Monitor of <output>" sources
+  win32: 'cable output|stereo mix', // VB-Audio Virtual Cable, or Realtek Stereo Mix
+};
+const AUDIO_DEVICE_PATTERN =
+  process.env.DEKI_AUDIO_DEVICE || DEFAULT_AUDIO_DEVICE_PATTERNS[process.platform] || 'blackhole';
 const WHISPER_MODEL = process.env.WHISPER_MODEL_NAME || 'base.en';
 // English-only models (*.en) can't auto-detect language, so pin them to 'en';
 // multilingual models default to auto-detection. WHISPER_LANGUAGE overrides.
@@ -59,6 +73,7 @@ function appendTranscript(text) {
     transcriptWords = transcriptWords.slice(transcriptWords.length - TRANSCRIPT_WORD_LIMIT);
   }
   transcriptVersion++;
+  sendToRenderer('transcript:update', getTranscriptText());
 }
 
 function getTranscriptText() {
@@ -67,18 +82,27 @@ function getTranscriptText() {
 
 // --- overlay window ---
 
+function windowStatePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
 function createOverlayWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width } = primaryDisplay.workAreaSize;
+  const bounds = windowState.restoreBounds(
+    windowState.loadSavedBounds(windowStatePath()),
+    screen.getAllDisplays().map((display) => display.workArea),
+    screen.getPrimaryDisplay().workArea
+  );
 
   overlayWindow = new BrowserWindow({
-    width: 420,
-    height: 340,
-    x: width - 440,
-    y: 40,
+    ...bounds,
+    minWidth: windowState.MIN_SIZE.width,
+    minHeight: windowState.MIN_SIZE.height,
     frame: false,
     transparent: true,
-    resizable: false,
+    // Native edge resizing works for transparent frameless windows on macOS
+    // and Linux but is unreliable on Windows; the corner grip in the UI
+    // (window:resize) works everywhere.
+    resizable: process.platform !== 'win32',
     hasShadow: false,
     skipTaskbar: true,
     show: true,
@@ -93,9 +117,51 @@ function createOverlayWindow() {
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
+  // Answers can contain links. Never navigate the overlay itself; open
+  // http(s) links in the default browser instead.
+  const openExternally = (url) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+  };
+  overlayWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternally(url);
+    return { action: 'deny' };
+  });
+  overlayWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault();
+    openExternally(url);
+  });
+
+  // Remember where the user put the overlay and how big they made it.
+  let saveTimer = null;
+  const persistBounds = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        windowState.saveBounds(windowStatePath(), overlayWindow.getBounds());
+      }
+    }, 300);
+  };
+  overlayWindow.on('resize', persistBounds);
+  overlayWindow.on('move', persistBounds);
+  overlayWindow.on('close', () => {
+    clearTimeout(saveTimer);
+    windowState.saveBounds(windowStatePath(), overlayWindow.getBounds());
+  });
+
   overlayWindow.on('closed', () => {
     overlayWindow = null;
+    // Nothing left to show an answer in; stop the request (and, via the
+    // dropped connection, the backend's Ollama call) instead of finishing it.
+    if (currentCycle) currentCycle.abort.abort();
   });
+}
+
+// Every send goes through here: the window can be closed while a cycle is
+// still awaiting a screenshot or reading the stream, and calling
+// webContents.send on a destroyed window throws.
+function sendToRenderer(channel, ...args) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.webContents.send(channel, ...args);
 }
 
 function toggleOverlay() {
@@ -109,9 +175,18 @@ function toggleOverlay() {
 
 // --- screenshot capture ---
 
+// desktopCapturer doesn't order sources by display, so with more than one
+// monitor sources[0] can be any of them. Match on display_id, falling back to
+// the first source only when the platform leaves display_id blank (some Linux
+// setups do) or there's a single screen anyway.
+function pickPrimarySource(sources) {
+  const primaryId = String(screen.getPrimaryDisplay().id);
+  return sources.find((source) => source.display_id === primaryId) || sources[0];
+}
+
 async function capturePrimaryScreen(thumbnailSize) {
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
-  const primarySource = sources[0];
+  const primarySource = pickPrimarySource(sources);
   if (!primarySource || primarySource.thumbnail.isEmpty()) return null;
   return primarySource.thumbnail;
 }
@@ -179,7 +254,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
   try {
     screenshot = await captureScreenshotBase64();
   } catch (err) {
-    overlayWindow.webContents.send('ai:error', `Screenshot capture failed: ${err.message || err}`);
+    sendToRenderer('ai:error', `Screenshot capture failed: ${err.message || err}`);
     return;
   }
 
@@ -189,7 +264,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
     transcriptVersion,
   };
 
-  overlayWindow.webContents.send('ai:chunk-start');
+  sendToRenderer('ai:chunk-start', { question: manualQuestion || null });
 
   try {
     const response = await fetch(`${BACKEND_URL}/api/analyze`, {
@@ -211,8 +286,8 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
     if (!response.body) {
       // Non-streaming fallback: whole response arrives as one JSON payload.
       const data = await response.json();
-      overlayWindow.webContents.send('ai:chunk', data.response || '');
-      overlayWindow.webContents.send('ai:done');
+      sendToRenderer('ai:chunk', data.response || '');
+      sendToRenderer('ai:done');
       return;
     }
 
@@ -231,7 +306,7 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
         throw new Error(`Malformed stream line from backend: ${line.slice(0, 200)}`);
       }
       if (event.type === 'chunk' && event.text) {
-        overlayWindow.webContents.send('ai:chunk', event.text);
+        sendToRenderer('ai:chunk', event.text);
       } else if (event.type === 'error') {
         finished = true;
         throw new Error(event.message || 'Backend reported an error mid-stream');
@@ -254,11 +329,48 @@ async function runAnalysisCycleInner(manualQuestion, signal) {
       throw new Error('Connection to backend closed before the response finished');
     }
 
-    overlayWindow.webContents.send('ai:done');
+    sendToRenderer('ai:done');
   } catch (err) {
     if (signal.aborted) return; // superseded by a newer question - not an error
-    overlayWindow.webContents.send('ai:error', err.message || String(err));
+    sendToRenderer('ai:error', err.message || String(err));
   }
+}
+
+// --- backend health ---
+//
+// Polls the backend's /health so the overlay can say exactly what's missing
+// (backend down, Ollama down, a model not pulled) instead of failing every
+// cycle. Automatic cycles are skipped while unhealthy; typed questions and
+// Ctrl/Cmd+Shift+R still go through, so their errors are shown as usual.
+
+const HEALTH_RETRY_MS = 5000; // while something is wrong
+const HEALTH_RECHECK_MS = 30000; // while everything is fine
+let backendHealth = { ok: true, message: null, checked: false };
+let healthTimer = null;
+
+async function checkBackendHealth() {
+  let result;
+  try {
+    const response = await fetch(`${BACKEND_URL}/health`, { signal: AbortSignal.timeout(5000) });
+    const report = await response.json().catch(() => null);
+    result = { status: response.status, report };
+  } catch (err) {
+    result = { error: err };
+  }
+  const message = describeHealth({ backendUrl: BACKEND_URL, ...result });
+  const ok = message === null;
+  if (ok !== backendHealth.ok || message !== backendHealth.message || !backendHealth.checked) {
+    if (!ok) console.warn('[overlay] backend not ready:', message);
+    sendToRenderer('backend:health', { ok, message });
+  }
+  backendHealth = { ok, message, checked: true };
+  return backendHealth;
+}
+
+async function healthLoop() {
+  clearTimeout(healthTimer); // a page reload re-runs this; keep one loop
+  const { ok } = await checkBackendHealth();
+  healthTimer = setTimeout(healthLoop, ok ? HEALTH_RECHECK_MS : HEALTH_RETRY_MS);
 }
 
 // Self-pacing loop: each tick waits for the previous cycle to finish, then
@@ -267,7 +379,7 @@ async function autoTick() {
   captureTimer = null;
   if (!captureLoopRunning) return;
   try {
-    if (overlayWindow && overlayWindow.isVisible() && Date.now() >= holdAutoUntil) {
+    if (overlayWindow && overlayWindow.isVisible() && backendHealth.ok && Date.now() >= holdAutoUntil) {
       const changed =
         transcriptVersion !== lastAnalyzed.transcriptVersion ||
         screenChanged(await captureFingerprint(), lastAnalyzed.fingerprint);
@@ -311,8 +423,8 @@ function registerShortcuts() {
 
 // --- system audio -> local whisper.cpp transcription ---
 //
-// Renderer records system audio (via a BlackHole virtual input device, not
-// the microphone - see README) with MediaRecorder (webm/opus) and ships each
+// Renderer records system audio (via a loopback input device such as
+// BlackHole, not the microphone - see README) with MediaRecorder (webm/opus) and ships each
 // ~5s chunk over IPC as an ArrayBuffer. We convert it to 16kHz mono WAV with
 // ffmpeg (required on PATH - see README) and hand it to nodejs-whisper, which
 // shells out to a locally-built whisper.cpp binary. Nothing here calls out
@@ -349,7 +461,7 @@ async function transcribeAudioChunk(arrayBuffer) {
   try {
     await convertToWav16kMono(rawPath, wavPath);
 
-    const text = await nodewhisper(wavPath, {
+    const rawOutput = await nodewhisper(wavPath, {
       modelName: WHISPER_MODEL,
       autoDownloadModelName: WHISPER_MODEL,
       removeWavFileAfterTranscription: true,
@@ -359,9 +471,16 @@ async function transcribeAudioChunk(arrayBuffer) {
       },
     });
 
-    appendTranscript(text);
+    // nodejs-whisper returns whisper-cli's raw stdout, timestamps included.
+    // extractSpeech also drops silence markers and filler hallucinations, so a
+    // quiet segment adds no words and doesn't trigger a re-analysis.
+    const speech = extractSpeech(rawOutput);
+    appendTranscript(speech);
+    sendToRenderer('audio:transcribed', { ok: true, heardSpeech: Boolean(speech) });
   } catch (err) {
-    console.error('[overlay] transcription failed:', err.message || err);
+    const message = err.code === 'ENOENT' ? 'ffmpeg not found on PATH' : err.message || String(err);
+    console.error('[overlay] transcription failed:', message);
+    sendToRenderer('audio:transcribed', { ok: false, message });
   } finally {
     fs.rm(rawPath, { force: true }, () => {});
     fs.rm(wavPath, { force: true }, () => {});
@@ -407,6 +526,20 @@ ipcMain.handle('manual:ask', async (_event, question) => {
   }
 });
 
+// Static settings the sandboxed renderer can't read from process.env itself.
+ipcMain.handle('app:config', () => ({
+  platform: process.platform,
+  audioDevicePattern: AUDIO_DEVICE_PATTERN,
+  transcriberAvailable: Boolean(nodewhisper),
+}));
+
+// Corner-grip resizing from the renderer (see resizable above).
+ipcMain.on('window:resize', (_event, size) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const { width, height } = windowState.clampSize(size || {});
+  overlayWindow.setSize(width, height);
+});
+
 ipcMain.on('app:quit', () => {
   app.quit();
 });
@@ -416,10 +549,13 @@ ipcMain.on('app:quit', () => {
 app.whenReady().then(() => {
   createOverlayWindow();
   registerShortcuts();
+  // Report health once the page can receive it, then keep polling.
+  overlayWindow.webContents.once('did-finish-load', healthLoop);
   startCaptureLoop();
 });
 
 app.on('will-quit', () => {
+  clearTimeout(healthTimer);
   globalShortcut.unregisterAll();
   stopCaptureLoop();
 });

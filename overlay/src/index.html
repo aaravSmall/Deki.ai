@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- Answers are model output rendered as HTML: only local scripts/styles,
+       and no remote images, so nothing in an answer can phone home. -->
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+  />
   <title>Deki.ai</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -10,12 +16,32 @@
     <header class="drag-bar">
       <span class="dot" id="status-dot"></span>
       <span class="title">deki.ai</span>
-      <span class="hint">Ctrl+Shift+Space hide · Ctrl+Shift+R refresh</span>
+      <span class="audio-status" id="audio-status" data-state="pending" title="Looking for a system audio device…">audio</span>
+      <span class="hint" id="shortcut-hint"></span>
       <button id="close-btn" class="close-btn" title="Quit">&times;</button>
     </header>
 
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-view="answer" role="tab">Answer</button>
+      <button type="button" class="tab" data-view="transcript" role="tab">Transcript</button>
+      <button type="button" class="tab" data-view="history" role="tab">
+        History <span id="history-count" class="count"></span>
+      </button>
+    </nav>
+
+    <div id="health-banner" class="health-banner" role="status" hidden></div>
+
     <main class="response-card">
-      <div id="response-text" class="response-text">Waiting for first capture…</div>
+      <section class="view active" data-view="answer">
+        <div id="response-text" class="response-text">Waiting for first capture…</div>
+      </section>
+      <section class="view" data-view="transcript">
+        <div id="transcript-text" class="transcript-text empty">No speech transcribed yet.</div>
+      </section>
+      <section class="view" data-view="history">
+        <ol id="history-list" class="history-list"></ol>
+        <div id="history-empty" class="empty">Finished answers will show up here.</div>
+      </section>
     </main>
 
     <form id="ask-form" class="ask-row">
@@ -27,8 +53,12 @@
       />
       <button type="submit">Ask</button>
     </form>
+
+    <div id="resize-grip" class="resize-grip" title="Drag to resize"></div>
   </div>
 
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+  <script src="../node_modules/dompurify/dist/purify.min.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
